@@ -29,7 +29,6 @@ import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.ObjectTypeI;
 import com.google.javascript.rhino.TypeI;
-
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -272,6 +271,7 @@ public abstract class JSType implements FunctionTypeI, ObjectTypeI {
       UNDEFINED_MASK | NON_SCALAR_MASK,
       ImmutableSet.of(ObjectType.TOP_OBJECT), null, NO_ENUMS);
 
+  @Override
   public boolean isTop() {
     return TOP_MASK == getMask();
   }
@@ -371,6 +371,7 @@ public abstract class JSType implements FunctionTypeI, ObjectTypeI {
     return (getMask() & NULL_MASK) != 0;
   }
 
+  @Override
   public boolean isTypeVariable() {
     return getMask() == TYPEVAR_MASK;
   }
@@ -1410,6 +1411,16 @@ public abstract class JSType implements FunctionTypeI, ObjectTypeI {
         ? makeType(NON_SCALAR_MASK, builder.build(), null, NO_ENUMS) : BOTTOM;
   }
 
+  public boolean isPropDefinedOnSubtype(QualifiedName pname) {
+    Preconditions.checkArgument(pname.isIdentifier());
+    for (ObjectType obj : getObjs()) {
+      if (obj.isPropDefinedOnSubtype(pname)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   @Override
   public String toString() {
     if (mockToString) {
@@ -1536,6 +1547,34 @@ public abstract class JSType implements FunctionTypeI, ObjectTypeI {
   }
 
   @Override
+  public boolean isSomeUnknownType() {
+    FunctionType ft = this.getFunTypeIfSingletonObj();
+    return isUnknown()
+        || (isInstanceofObject() && isLoose())
+        || (ft != null && ft.isTopFunction());
+  }
+
+  @Override
+  public boolean isUnresolved() {
+    return isUnknown();
+  }
+
+  @Override
+  public boolean isUnresolvedOrResolvedUnknown() {
+    return isUnknown();
+  }
+
+  @Override
+  public boolean isUnionType() {
+    return isUnion();
+  }
+
+  @Override
+  public boolean isVoidable() {
+    return (getMask() & UNDEFINED_MASK) != 0;
+  }
+
+  @Override
   public TypeI restrictByNotNullOrUndefined() {
     return this.removeType(NULL_OR_UNDEF);
   }
@@ -1629,6 +1668,28 @@ public abstract class JSType implements FunctionTypeI, ObjectTypeI {
   }
 
   @Override
+  public boolean acceptsArguments(List<? extends TypeI> argumentTypes) {
+    Preconditions.checkState(this.isFunctionType());
+
+    int numArgs = argumentTypes.size();
+    FunctionType fnType = this.getFunTypeIfSingletonObj();
+
+    if (numArgs < fnType.getMinArity() || numArgs > fnType.getMaxArity()) {
+      return false;
+    }
+
+    for (int i = 0; i < numArgs; i++) {
+      TypeI ithArgType = argumentTypes.get(i);
+      JSType ithParamType = fnType.getFormalType(i);
+      if (!ithArgType.isSubtypeOf(ithParamType)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  @Override
   public boolean hasProperties() {
     throw new UnsupportedOperationException("hasProperties not implemented yet");
   }
@@ -1683,10 +1744,13 @@ public abstract class JSType implements FunctionTypeI, ObjectTypeI {
   @Override
   public JSDocInfo getOwnPropertyJSDocInfo(String propertyName) {
     Node defsite = this.getOwnPropertyDefSite(propertyName);
-    if (defsite != null) {
-      return NodeUtil.getBestJSDocInfo(defsite);
-    }
-    return null;
+    return defsite == null ? null : NodeUtil.getBestJSDocInfo(defsite);
+  }
+
+  @Override
+  public JSDocInfo getPropertyJSDocInfo(String propertyName) {
+    Node defsite = this.getPropertyDefSite(propertyName);
+    return defsite == null ? null : NodeUtil.getBestJSDocInfo(defsite);
   }
 
   @Override
@@ -1699,6 +1763,16 @@ public abstract class JSType implements FunctionTypeI, ObjectTypeI {
   public Node getPropertyDefSite(String propertyName) {
     Preconditions.checkState(this.isSingletonObj());
     return this.getObjTypeIfSingletonObj().getPropertyDefSite(propertyName);
+  }
+
+  /** Returns the names of all the properties directly on this type. */
+  @Override
+  public Iterable<String> getOwnPropertyNames() {
+    Preconditions.checkState(this.isSingletonObj());
+    // TODO(aravindpg): this might need to also include the extra properties as stored in the
+    // ObjectType::props. If so, demonstrate a test case that needs it and fix this.
+    Set<String> props = getNominalTypeIfSingletonObj().getAllOwnClassProps();
+    return props;
   }
 
   @Override
@@ -1716,7 +1790,7 @@ public abstract class JSType implements FunctionTypeI, ObjectTypeI {
   @Override
   public boolean isInstanceType() {
     Preconditions.checkState(this.isSingletonObj());
-    return this.getNominalTypeIfSingletonObj().isClass();
+    return this.getNominalTypeIfSingletonObj().isClassy();
   }
 
   @Override
@@ -1724,6 +1798,27 @@ public abstract class JSType implements FunctionTypeI, ObjectTypeI {
     Preconditions.checkState(this.isSingletonObj());
     Preconditions.checkArgument(!propertyName.contains("."));
     return hasProp(new QualifiedName(propertyName));
+  }
+
+  @Override
+  public Iterable<TypeI> getUnionMembers() {
+    ImmutableSet.Builder<TypeI> builder = ImmutableSet.builder();
+    JSType[] primitiveTypes = { BOOLEAN, NUMBER, STRING, UNDEFINED, NULL };
+    for (JSType primitiveType : primitiveTypes) {
+      if ((this.getMask() & primitiveType.getMask()) != 0) {
+        builder.add(primitiveType);
+      }
+    }
+    for (ObjectType obj : this.getObjs()) {
+      builder.add(JSType.fromObjectType(obj));
+    }
+    for (EnumType e : this.getEnums()) {
+      builder.add(JSType.fromEnum(e));
+    }
+    if (this.getTypeVar() != null) {
+      builder.add(JSType.fromTypeVar(this.getTypeVar()));
+    }
+    return builder.build();
   }
 }
 

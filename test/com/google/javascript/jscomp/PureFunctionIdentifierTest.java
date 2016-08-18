@@ -23,6 +23,7 @@ import com.google.common.collect.Iterables;
 import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.rhino.Node;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -570,6 +571,30 @@ public final class PureFunctionIdentifierTest extends CompilerTestCase {
         prefix + "return externObj.foo" + suffix, expected);
   }
 
+  public void testNoSideEffectsSimple2() throws Exception {
+    regExpHaveSideEffects = false;
+
+    checkMarkedCalls(
+        LINE_JOINER.join(
+            "function f() {",
+            "  return ''.replace(/xyz/g, '');",
+            "}",
+            "f()"),
+        ImmutableList.of("STRING  STRING replace", "f"));
+  }
+
+  public void testNoSideEffectsSimple3() throws Exception {
+    regExpHaveSideEffects = false;
+
+    checkMarkedCalls(
+        LINE_JOINER.join(
+            "function f(/** string */ str) {",
+            "  return str.replace(/xyz/g, '');",
+            "}",
+            "f('')"),
+        ImmutableList.of("str.replace", "f"));
+  }
+
   public void testResultLocalitySimple() throws Exception {
     String prefix = "var g; function f(){";
     String suffix = "} f()";
@@ -921,6 +946,7 @@ public final class PureFunctionIdentifierTest extends CompilerTestCase {
   }
 
   public void testHookOperator2() throws Exception {
+
     checkMarkedCalls("var f = true ? function(){} : externNsef2;\n" +
                      "f()",
                      ImmutableList.<String>of());
@@ -935,7 +961,21 @@ public final class PureFunctionIdentifierTest extends CompilerTestCase {
   public void testHookOperators4() throws Exception {
     checkMarkedCalls("var f = true ? function(){} : function(){};\n" +
                      "f()",
-                     ImmutableList.<String>of());
+                     ImmutableList.<String>of("f"));
+  }
+
+  public void testHookOperators5() throws Exception {
+    checkMarkedCalls(LINE_JOINER.join(
+        "var f = String.prototype.trim ? function(str){return str} : function(){};",
+        "f()"),
+        ImmutableList.<String>of("f"));
+  }
+
+  public void testHookOperators6() throws Exception {
+    checkMarkedCalls(LINE_JOINER.join(
+        "var f = yyy ? function(str){return str} : xxx ? function() {} : function(){};",
+        "f()"),
+        ImmutableList.<String>of("f"));
   }
 
   public void testThrow1() throws Exception {
@@ -1373,7 +1413,8 @@ public final class PureFunctionIdentifierTest extends CompilerTestCase {
     @Override
     public void process(Node externs, Node root) {
       compiler.setHasRegExpGlobalReferences(regExpHaveSideEffects);
-      NameBasedDefinitionProvider defFinder = new NameBasedDefinitionProvider(compiler);
+      compiler.getOptions().setUseTypesForOptimization(true);
+      NameBasedDefinitionProvider defFinder = new NameBasedDefinitionProvider(compiler, true);
       defFinder.process(externs, root);
       PureFunctionIdentifier passUnderTest =
           new PureFunctionIdentifier(compiler, defFinder);
@@ -1393,7 +1434,7 @@ public final class PureFunctionIdentifierTest extends CompilerTestCase {
           noSideEffectCalls.add(generateNameString(n.getFirstChild()));
         }
       } else if (n.isCall()) {
-        if (!NodeUtil.functionCallHasSideEffects(n)) {
+        if (!NodeUtil.functionCallHasSideEffects(n, compiler)) {
           noSideEffectCalls.add(generateNameString(n.getFirstChild()));
         }
         if (NodeUtil.callHasLocalResult(n)) {

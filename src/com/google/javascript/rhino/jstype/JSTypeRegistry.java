@@ -48,10 +48,12 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Multimap;
 import com.google.javascript.rhino.ErrorReporter;
 import com.google.javascript.rhino.JSDocInfo;
+import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.SimpleErrorReporter;
 import com.google.javascript.rhino.Token;
@@ -62,7 +64,6 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -140,7 +141,7 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
   // Types that have been "forward-declared."
   // If these types are not declared anywhere in the binary, we shouldn't
   // try to type-check them at all.
-  private final Set<String> forwardDeclaredTypes = new HashSet<>();
+  private final Set<String> forwardDeclaredTypes;
 
   // A map of properties to the types on which those properties have been
   // declared.
@@ -171,9 +172,6 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
   private final Multimap<StaticTypedScope<JSType>, NamedType> resolvedNamedTypes =
       ArrayListMultimap.create();
 
-  // NamedType warns about unresolved types in the last generation.
-  private boolean lastGeneration = true;
-
   // The template type name.
   private final Map<String, TemplateType> templateTypes = new HashMap<>();
 
@@ -181,12 +179,14 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
   // there are no template types.
   private final TemplateTypeMap emptyTemplateTypeMap;
 
-  /**
-   * Constructs a new type registry populated with the built-in types.
-   */
-  public JSTypeRegistry(
-      ErrorReporter reporter) {
+  public JSTypeRegistry(ErrorReporter reporter) {
+    this(reporter, ImmutableSet.<String>of());
+  }
+
+  /** Constructs a new type registry populated with the built-in types. */
+  public JSTypeRegistry(ErrorReporter reporter, Set<String> forwardDeclaredTypes) {
     this.reporter = reporter;
+    this.forwardDeclaredTypes = forwardDeclaredTypes;
     this.emptyTemplateTypeMap = new TemplateTypeMap(
         this, ImmutableList.<TemplateType>of(), ImmutableList.<JSType>of());
     nativeTypes = new JSType[JSTypeNative.values().length];
@@ -867,10 +867,6 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
     return stack;
   }
 
-  boolean isLastGeneration() {
-    return lastGeneration;
-  }
-
   /**
    * Tells the type system that {@code type} implements interface {@code
    * interfaceInstance}.
@@ -916,14 +912,6 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
   public void overwriteDeclaredType(String name, JSType t) {
     Preconditions.checkState(namesToTypes.containsKey(name));
     register(t, name);
-  }
-
-  /**
-   * Records a forward-declared type name. We will not emit errors if this
-   * type name never resolves to anything.
-   */
-  public void forwardDeclareType(String name) {
-    forwardDeclaredTypes.add(name);
   }
 
   /**
@@ -1153,6 +1141,11 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
     }
   }
 
+  @Override
+  public JSType evaluateTypeExpressionInGlobalScope(JSTypeExpression expr) {
+    return expr.evaluate(null, this);
+  }
+
   /**
    * Creates a type representing optional values of the given type.
    * @return the union of the type and the void type
@@ -1205,6 +1198,11 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
       builder.addAlternate(type);
     }
     return builder.build();
+  }
+
+  @Override
+  public JSType createUnionType(List<? extends TypeI> variants) {
+    return createUnionType(variants.toArray(new JSType[0]));
   }
 
   /**
@@ -1606,7 +1604,7 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
 
   private JSType createFromTypeNodesInternal(Node n, String sourceName,
       StaticTypedScope<JSType> scope) {
-    switch (n.getType()) {
+    switch (n.getToken()) {
       case LC: // Record type.
         return createRecordTypeFromNodes(
             n.getFirstChild(), sourceName, scope);
@@ -1709,8 +1707,7 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
         JSType thisType = null;
         boolean isConstructor = false;
         Node current = n.getFirstChild();
-        if (current.getType() == Token.THIS ||
-            current.getType() == Token.NEW) {
+        if (current.getToken() == Token.THIS || current.getToken() == Token.NEW) {
           Node contextNode = current.getFirstChild();
 
           JSType candidateThisType = createFromTypeNodesInternal(
@@ -1722,9 +1719,9 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
           if (candidateThisType.isNullType() ||
               candidateThisType.isVoidType()) {
             thisType = candidateThisType;
-          } else if (current.getType() == Token.THIS) {
+          } else if (current.getToken() == Token.THIS) {
             thisType = candidateThisType.restrictByNotNullOrUndefined();
-          } else if (current.getType() == Token.NEW) {
+          } else if (current.getToken() == Token.NEW) {
             thisType = ObjectType.cast(
                 candidateThisType.restrictByNotNullOrUndefined());
             if (thisType == null) {
@@ -1736,16 +1733,16 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
             }
           }
 
-          isConstructor = current.getType() == Token.NEW;
+          isConstructor = current.getToken() == Token.NEW;
           current = current.getNext();
         }
 
         FunctionParamBuilder paramBuilder = new FunctionParamBuilder(this);
 
-        if (current.getType() == Token.PARAM_LIST) {
+        if (current.getToken() == Token.PARAM_LIST) {
           for (Node arg = current.getFirstChild(); arg != null;
                arg = arg.getNext()) {
-            if (arg.getType() == Token.ELLIPSIS) {
+            if (arg.getToken() == Token.ELLIPSIS) {
               if (arg.getChildCount() == 0) {
                 paramBuilder.addVarArgs(getNativeType(UNKNOWN_TYPE));
               } else {
@@ -1756,7 +1753,7 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
             } else {
               JSType type = createFromTypeNodesInternal(
                   arg, sourceName, scope);
-              if (arg.getType() == Token.EQUALS) {
+              if (arg.getToken() == Token.EQUALS) {
                 boolean addSuccess = paramBuilder.addOptionalParams(type);
                 if (!addSuccess) {
                   reporter.warning(
@@ -1808,7 +1805,7 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
       Node fieldNameNode = fieldTypeNode;
       boolean hasType = false;
 
-      if (fieldTypeNode.getType() == Token.COLON) {
+      if (fieldTypeNode.getToken() == Token.COLON) {
         fieldNameNode = fieldTypeNode.getFirstChild();
         hasType = true;
       }

@@ -355,7 +355,7 @@ class FlowSensitiveInlineVariables extends AbstractPostOrderCallback
           new Predicate<Node>() {
             @Override
             public boolean apply(Node input) {
-              switch (input.getType()) {
+              switch (input.getToken()) {
                 case GETELEM:
                 case GETPROP:
                 case ARRAYLIT:
@@ -416,13 +416,13 @@ class FlowSensitiveInlineVariables extends AbstractPostOrderCallback
       Node useParent = use.getParent();
       if (def.isAssign()) {
         Node rhs = def.getLastChild();
-        rhs.detachFromParent();
+        rhs.detach();
         // Oh yes! I have grandparent to remove this.
         Preconditions.checkState(defParent.isExprResult());
         while (defParent.getParent().isLabel()) {
           defParent = defParent.getParent();
         }
-        defParent.detachFromParent();
+        defParent.detach();
         useParent.replaceChild(use, rhs);
       } else if (defParent.isVar()) {
         Node rhs = def.getLastChild();
@@ -445,7 +445,7 @@ class FlowSensitiveInlineVariables extends AbstractPostOrderCallback
 
             @Override
             public void visit(NodeTraversal t, Node n, Node parent) {
-              switch (n.getType()) {
+              switch (n.getToken()) {
                 case NAME:
                   if (n.getString().equals(varName) && n.hasChildren()) {
                     def = n;

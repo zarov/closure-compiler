@@ -86,6 +86,7 @@ public final class RefactoringDriver {
     CompilerOptions options = new CompilerOptions();
     options.setLanguageIn(LanguageMode.ECMASCRIPT6);
     options.setLanguageOut(LanguageMode.ECMASCRIPT5);
+    options.setSummaryDetailLevel(0);
 
     DependencyOptions deps = new DependencyOptions();
     deps.setDependencySorting(true);
@@ -93,14 +94,13 @@ public final class RefactoringDriver {
 
     options.setChecksOnly(true);
     options.setContinueAfterErrors(true);
-    options.setPreserveDetailedSourceInfo(true);
     options.setParseJsDocDocumentation(Config.JsDocParsing.INCLUDE_DESCRIPTIONS_NO_WHITESPACE);
     options.setCheckSuspiciousCode(true);
     options.setCheckSymbols(true);
     options.setCheckTypes(true);
     options.setClosurePass(true);
     options.setGenerateExports(true);
-    options.setPreserveGoogRequires(true);
+    options.setPreserveGoogProvidesAndRequires(true);
 
     options.setWarningLevel(DiagnosticGroups.MISSING_REQUIRE, CheckLevel.ERROR);
 

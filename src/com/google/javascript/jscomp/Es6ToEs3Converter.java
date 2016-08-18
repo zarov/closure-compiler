@@ -19,6 +19,8 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
+import com.google.javascript.jscomp.parsing.parser.FeatureSet;
+import com.google.javascript.jscomp.parsing.parser.FeatureSet.Feature;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSDocInfoBuilder;
@@ -97,13 +99,39 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
 
   @Override
   public void process(Node externs, Node root) {
-    NodeTraversal.traverseEs6(compiler, externs, this);
-    NodeTraversal.traverseEs6(compiler, root, this);
+    // TODO(moz): Currently, only .d.ts externs could have ES6 features in them. We should avoid
+    // traversing the externs in the common use case.
+    TranspilationPasses.processTranspile(compiler, externs, this);
+
+    for (Node singleRoot : root.children()) {
+      FeatureSet features = (FeatureSet) singleRoot.getProp(Node.FEATURE_SET);
+      if (features == null) {
+        continue;
+      }
+      // TODO(moz): getter / setter should be processed in a separate pass
+      if (TranspilationPasses.isScriptEs6ImplOrHigher(singleRoot)) {
+        singleRoot.putBooleanProp(Node.TRANSPILED, true);
+        NodeTraversal.traverseEs6(compiler, singleRoot, this);
+      } else if (features.contains(Feature.GETTER)
+          || features.contains(Feature.SETTER)) {
+        NodeTraversal.traverseEs6(compiler, singleRoot, this);
+      }
+    }
   }
 
   @Override
   public void hotSwapScript(Node scriptRoot, Node originalRoot) {
-    NodeTraversal.traverseEs6(compiler, scriptRoot, this);
+    FeatureSet features = (FeatureSet) scriptRoot.getProp(Node.FEATURE_SET);
+    if (features == null) {
+      return;
+    }
+    if (TranspilationPasses.isScriptEs6ImplOrHigher(scriptRoot)) {
+      scriptRoot.putBooleanProp(Node.TRANSPILED, true);
+      NodeTraversal.traverseEs6(compiler, scriptRoot, this);
+    } else if (features.contains(Feature.GETTER)
+        || features.contains(Feature.SETTER)) {
+      NodeTraversal.traverseEs6(compiler, scriptRoot, this);
+    }
   }
 
   /**
@@ -113,7 +141,7 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
    */
   @Override
   public boolean shouldTraverse(NodeTraversal t, Node n, Node parent) {
-    switch (n.getType()) {
+    switch (n.getToken()) {
       case REST:
         visitRestParam(n, parent);
         break;
@@ -140,7 +168,7 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
 
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
-    switch (n.getType()) {
+    switch (n.getToken()) {
       case NAME:
         if (!n.isFromExterns() && isGlobalSymbol(t, n)) {
           initSymbolBefore(n);
@@ -258,7 +286,7 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
    */
   private void visitMemberFunctionDefInObjectLit(Node n, Node parent) {
     String name = n.getString();
-    Node stringKey = IR.stringKey(name, n.getFirstChild().detachFromParent());
+    Node stringKey = IR.stringKey(name, n.getFirstChild().detach());
     stringKey.setJSDocInfo(n.getJSDocInfo());
     parent.replaceChild(n, stringKey);
     compiler.reportCodeChange();
@@ -293,7 +321,7 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
     } else {
       Preconditions.checkState(NodeUtil.isNameDeclaration(variable),
           "Expected var, let, or const. Got %s", variable);
-      declType = variable.getType();
+      declType = variable.getToken();
       variableName = variable.getFirstChild().getQualifiedName();
     }
     Node iterResult = IR.name(ITER_RESULT + variableName);
@@ -361,7 +389,7 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
         type = functionInfo.getParameterType(paramName);
       }
     }
-    if (type != null && type.getRoot().getType() != Token.ELLIPSIS) {
+    if (type != null && type.getRoot().getToken() != Token.ELLIPSIS) {
       compiler.report(JSError.make(restParam, BAD_REST_PARAMETER_ANNOTATION));
     }
 
@@ -378,14 +406,14 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
     newBlock.addChildToFront(let);
 
     for (Node child : functionBody.children()) {
-      newBlock.addChildToBack(child.detachFromParent());
+      newBlock.addChildToBack(child.detach());
     }
 
     if (type != null) {
       Node arrayType = IR.string("Array");
       Node typeNode = type.getRoot();
       Node memberType =
-          typeNode.getType() == Token.ELLIPSIS
+          typeNode.getToken() == Token.ELLIPSIS
               ? typeNode.getFirstChild().cloneTree()
               : typeNode.cloneTree();
       arrayType.addChildToFront(
@@ -596,7 +624,7 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
         visitComputedPropInClass(member, metadata);
       } else if (member.isMemberFunctionDef() && member.getString().equals("constructor")) {
         ctorJSDocInfo = member.getJSDocInfo();
-        constructor = member.getFirstChild().detachFromParent();
+        constructor = member.getFirstChild().detach();
         if (!metadata.anonymous) {
           // Turns class Foo { constructor: function() {} } into function Foo() {},
           // i.e. attaches the name to the ctor function.
@@ -707,6 +735,7 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
       throw new IllegalStateException("Unexpected parent node " + parent);
     }
 
+    constructor.putBooleanProp(Node.IS_ES6_CLASS, true);
     compiler.reportCodeChange();
   }
 
@@ -813,7 +842,7 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
             (member.isGetterDef() || member.getBooleanProp(Node.COMPUTED_PROP_GETTER))
                 ? "get"
                 : "set",
-            function.detachFromParent());
+            function.detach());
     stringKey.setJSDocInfo(info.build());
     prop.addChildToBack(stringKey);
     prop.useSourceInfoIfMissingFromForTree(member);
@@ -871,7 +900,7 @@ public final class Es6ToEs3Converter implements NodeTraversal.Callback, HotSwapC
         member,
         NodeUtil.newQName(compiler, metadata.fullClassName),
         NodeUtil.newQName(compiler, metadata.fullClassName + ".prototype"));
-    Node method = member.getLastChild().detachFromParent();
+    Node method = member.getLastChild().detach();
 
     Node assign = IR.assign(qualifiedMemberAccess, method);
     assign.useSourceInfoIfMissingFromForTree(member);

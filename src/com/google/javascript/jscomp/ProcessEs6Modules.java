@@ -140,7 +140,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
         // Namespace imports' default export is the namespace itself.
         String name = isNamespaceImport ? "" : "default";
         importMap.put(child.getString(), new ModuleOriginalNamePair(moduleName, name));
-      } else if (child.getType() == Token.IMPORT_SPECS) {
+      } else if (child.getToken() == Token.IMPORT_SPECS) {
         for (Node grandChild : child.children()) {
           String origName = grandChild.getFirstChild().getString();
           if (grandChild.getChildCount() == 2) { // import {a as foo} from "mod"
@@ -155,8 +155,10 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
         }
       } else {
         // import * as ns from "mod"
-        Preconditions.checkState(child.getType() == Token.IMPORT_STAR,
-            "Expected an IMPORT_STAR node, but was: %s", child);
+        Preconditions.checkState(
+            child.getToken() == Token.IMPORT_STAR,
+            "Expected an IMPORT_STAR node, but was: %s",
+            child);
         // Namespace imports cannot be imported "as *".
         if (isNamespaceImport) {
           compiler.report(t.makeError(importDecl, NAMESPACE_IMPORT_CANNOT_USE_STAR,
@@ -229,7 +231,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
       //   export {x, y as z} from 'moduleIdentifier';
       Node moduleIdentifier = export.getLastChild();
       Node importNode = new Node(Token.IMPORT, moduleIdentifier.cloneNode());
-      importNode.copyInformationFrom(export);
+      importNode.useSourceInfoFrom(export);
       parent.addChildBefore(importNode, export);
       visit(t, importNode, parent);
 
@@ -244,7 +246,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
       }
       parent.removeChild(export);
     } else {
-      if (export.getFirstChild().getType() == Token.EXPORT_SPECS) {
+      if (export.getFirstChild().getToken() == Token.EXPORT_SPECS) {
         //     export {Foo};
         for (Node exportSpec : export.getFirstChild().children()) {
           Node origName = exportSpec.getFirstChild();
@@ -286,7 +288,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
             typedefs.add(name);
           }
         }
-        parent.replaceChild(export, declaration.detachFromParent());
+        parent.replaceChild(export, declaration.detach());
       }
       compiler.reportCodeChange();
     }

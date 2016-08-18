@@ -22,6 +22,7 @@ import static com.google.javascript.jscomp.TypeCheck.INSTANTIATE_ABSTRACT_CLASS;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
 import com.google.javascript.jscomp.type.ClosureReverseAbstractInterpreter;
 import com.google.javascript.jscomp.type.SemanticReverseAbstractInterpreter;
 import com.google.javascript.rhino.InputId;
@@ -31,6 +32,8 @@ import com.google.javascript.rhino.jstype.FunctionType;
 import com.google.javascript.rhino.jstype.JSType;
 import com.google.javascript.rhino.jstype.JSTypeNative;
 import com.google.javascript.rhino.jstype.ObjectType;
+
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -9258,7 +9261,7 @@ public final class TypeCheckTest extends CompilerTypeTestCase {
 
     // goog type on the VAR node
     Node varNode = p.root.getFirstChild();
-    assertEquals(Token.VAR, varNode.getType());
+    assertEquals(Token.VAR, varNode.getToken());
     JSType googNodeType = varNode.getFirstChild().getJSType();
     assertThat(googNodeType).isInstanceOf(ObjectType.class);
 
@@ -9267,7 +9270,7 @@ public final class TypeCheckTest extends CompilerTypeTestCase {
 
     // goog type on the left of the GETPROP node (under fist ASSIGN)
     Node getpropFoo1 = varNode.getNext().getFirstFirstChild();
-    assertEquals(Token.GETPROP, getpropFoo1.getType());
+    assertEquals(Token.GETPROP, getpropFoo1.getToken());
     assertEquals("goog", getpropFoo1.getFirstChild().getString());
     JSType googGetpropFoo1Type = getpropFoo1.getFirstChild().getJSType();
     assertThat(googGetpropFoo1Type).isInstanceOf(ObjectType.class);
@@ -9283,7 +9286,7 @@ public final class TypeCheckTest extends CompilerTypeTestCase {
     // (under second ASSIGN)
     Node getpropFoo2 = varNode.getNext().getNext()
         .getFirstFirstChild().getFirstChild();
-    assertEquals(Token.GETPROP, getpropFoo2.getType());
+    assertEquals(Token.GETPROP, getpropFoo2.getToken());
     assertEquals("goog", getpropFoo2.getFirstChild().getString());
     JSType googGetpropFoo2Type = getpropFoo2.getFirstChild().getJSType();
     assertThat(googGetpropFoo2Type).isInstanceOf(ObjectType.class);
@@ -9951,8 +9954,8 @@ public final class TypeCheckTest extends CompilerTypeTestCase {
     Node objectNode = nameNode.getFirstChild();
 
     // node extraction
-    assertEquals(Token.NAME, nameNode.getType());
-    assertEquals(Token.OBJECTLIT, objectNode.getType());
+    assertEquals(Token.NAME, nameNode.getToken());
+    assertEquals(Token.OBJECTLIT, objectNode.getToken());
 
     // value's type
     ObjectType objectType =
@@ -17016,6 +17019,50 @@ public final class TypeCheckTest extends CompilerTypeTestCase {
         "}"));
   }
 
+  public void testEs5ClassExtendingEs6Class() {
+    compiler.getOptions().setLanguageIn(LanguageMode.ECMASCRIPT6);
+    compiler.getOptions().setLanguageOut(LanguageMode.ECMASCRIPT5);
+    testTypes(
+        LINE_JOINER.join(
+            "class Foo {}",
+            "/** @constructor @extends {Foo} */ var Bar = function() {};"),
+        "ES5 class Bar cannot extend ES6 class Foo");
+  }
+
+  public void testEs5ClassExtendingEs6Class_noWarning() {
+    compiler.getOptions().setLanguageIn(LanguageMode.ECMASCRIPT6);
+    compiler.getOptions().setLanguageOut(LanguageMode.ECMASCRIPT5);
+    testTypes(
+        LINE_JOINER.join(
+            "class A {}",
+            "/** @constructor @extends {A} */",
+            "const B = createSubclass(A);"));
+  }
+
+  public void testNonNullTemplatedThis() {
+    testTypes(
+       LINE_JOINER.join(
+           "/** @constructor */",
+           "function C() {}",
+           "",
+           "/** ",
+           "  @return {THIS} ",
+           "  @this {THIS}",
+           "  @template THIS",
+           "*/",
+           "C.prototype.method = function() {};",
+           "",
+           "/** @return {C|null} */",
+           "function f() {",
+           "  return x;",
+           "};",
+           "",
+           "/** @type {string} */ var s = f().method();"),
+       "initializing variable\n" +
+       "found   : C\n" +
+       "required: string");
+  }
+
   private void testTypes(String js) {
     testTypes(js, (String) null);
   }
@@ -17190,6 +17237,15 @@ public final class TypeCheckTest extends CompilerTypeTestCase {
     assertEquals("parsing error: " +
         Joiner.on(", ").join(compiler.getErrors()),
         0, compiler.getErrorCount());
+
+    if (compiler.getOptions().getLanguageIn().isEs6OrHigher()) {
+      List<PassFactory> passes = new ArrayList<>();
+      TranspilationPasses.addEs6EarlyPasses(passes);
+      TranspilationPasses.addEs6LatePasses(passes);
+      PhaseOptimizer phaseopt = new PhaseOptimizer(compiler, null, null);
+      phaseopt.consume(passes);
+      phaseopt.process(externsNode, externAndJsRoot);
+    }
 
     TypedScope s = makeTypeCheck().processForTesting(externsNode, n);
     return new TypeCheckResult(n, s);

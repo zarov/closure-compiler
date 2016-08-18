@@ -21,7 +21,6 @@ import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSDocInfo.Visibility;
 import com.google.javascript.rhino.Node;
-
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -59,7 +58,7 @@ final class InlineAliases implements CompilerPass {
   private class AliasesCollector extends AbstractPostOrderCallback {
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
-      switch (n.getType()) {
+      switch (n.getToken()) {
         case VAR:
           if (n.getChildCount() == 1 && t.inGlobalScope()) {
             visitAliasDefinition(n.getFirstChild(), NodeUtil.getBestJSDocInfo(n.getFirstChild()));
@@ -111,7 +110,7 @@ final class InlineAliases implements CompilerPass {
   private class AliasesInliner extends AbstractPostOrderCallback {
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
-      switch (n.getType()) {
+      switch (n.getToken()) {
         case NAME:
         case GETPROP:
           if (n.isQualifiedName() && aliases.containsKey(n.getQualifiedName())) {
@@ -127,8 +126,7 @@ final class InlineAliases implements CompilerPass {
             }
 
             Node newNode = NodeUtil.newQName(compiler, resolveAlias(n.getQualifiedName(), n))
-                .copyInformationFromForTree(n);
-            newNode.setLength(n.getLength());
+                .useSourceInfoFromForTree(n);
             parent.replaceChild(n, newNode);
             compiler.reportCodeChange();
           }

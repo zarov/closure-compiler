@@ -53,6 +53,7 @@ import com.google.javascript.rhino.TypeI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -162,8 +163,7 @@ public class FunctionType extends PrototypeObjectType implements FunctionTypeI {
         nativeType, templateTypeMap);
     setPrettyPrint(true);
 
-    Preconditions.checkArgument(source == null ||
-        Token.FUNCTION == source.getType());
+    Preconditions.checkArgument(source == null || Token.FUNCTION == source.getToken());
     Preconditions.checkNotNull(arrowType);
     this.source = source;
     if (isConstructor) {
@@ -190,8 +190,7 @@ public class FunctionType extends PrototypeObjectType implements FunctionTypeI {
         false, typeParameters);
     setPrettyPrint(true);
 
-    Preconditions.checkArgument(source == null ||
-        Token.FUNCTION == source.getType());
+    Preconditions.checkArgument(source == null || Token.FUNCTION == source.getToken());
     Preconditions.checkArgument(name != null);
     this.source = source;
     this.call = new ArrowType(registry, new Node(Token.PARAM_LIST), null);
@@ -900,6 +899,7 @@ public class FunctionType extends PrototypeObjectType implements FunctionTypeI {
    * Given a constructor or an interface type, get its superclass constructor
    * or {@code null} if none exists.
    */
+  @Override
   public FunctionType getSuperClassConstructor() {
     Preconditions.checkArgument(isConstructor() || isInterface());
     ObjectType maybeSuperInstanceType = getPrototype().getImplicitPrototype();
@@ -1505,5 +1505,31 @@ public class FunctionType extends PrototypeObjectType implements FunctionTypeI {
       }
     }
     return null;
+  }
+
+  @Override
+  public boolean acceptsArguments(List<? extends TypeI> argumentTypes) {
+    // NOTE(aravindpg): This code is essentially lifted from TypeCheck::visitParameterList,
+    // but what small differences there are make it very painful to refactor out the shared code.
+    Iterator<? extends TypeI> arguments = argumentTypes.iterator();
+    Iterator<Node> parameters = this.getParameters().iterator();
+    Node parameter = null;
+    TypeI argument = null;
+    while (arguments.hasNext()
+        && (parameters.hasNext() || parameter != null && parameter.isVarArgs())) {
+      // If there are no parameters left in the list, then the while loop
+      // above implies that this must be a var_args function.
+      if (parameters.hasNext()) {
+        parameter = parameters.next();
+      }
+      argument = arguments.next();
+
+      if (!argument.isSubtypeOf(parameter.getTypeI())) {
+        return false;
+      }
+    }
+
+    int numArgs = argumentTypes.size();
+    return this.getMinArguments() <= numArgs && numArgs <= this.getMaxArguments();
   }
 }

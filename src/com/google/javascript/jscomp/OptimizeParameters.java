@@ -353,7 +353,7 @@ class OptimizeParameters
     // Things that can change value or are inaccessible can't be moved, these
     // are "this", "arguments", local names, and functions that capture local
     // values.
-    switch (n.getType()) {
+    switch (n.getToken()) {
       case THIS:
         return false;
       case FUNCTION:
@@ -486,7 +486,7 @@ class OptimizeParameters
     if (varName != null) {
       stmt = NodeUtil.newVarNode(varName.getString(), value);
     } else {
-      stmt = IR.exprResult(value);
+      stmt = IR.exprResult(value).useSourceInfoFrom(value);
     }
     block.addChildToFront(stmt);
     compiler.reportCodeChange();
@@ -510,7 +510,7 @@ class OptimizeParameters
     if (argNode != null) {
       // Keep the args in the same order, do the last first.
       eliminateParamsAfter(fnNode, argNode.getNext());
-      argNode.detachFromParent();
+      argNode.detach();
       Node var = IR.var(argNode).useSourceInfoIfMissingFrom(argNode);
       fnNode.getLastChild().addChildToFront(var);
       compiler.reportCodeChange();

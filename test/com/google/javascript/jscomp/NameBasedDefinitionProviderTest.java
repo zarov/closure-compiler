@@ -22,6 +22,7 @@ import com.google.common.collect.TreeMultiset;
 import com.google.javascript.jscomp.DefinitionsRemover.Definition;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.rhino.Node;
+
 import java.util.Collection;
 import java.util.Set;
 import java.util.TreeSet;
@@ -377,7 +378,7 @@ public final class NameBasedDefinitionProviderTest extends CompilerTestCase {
     private final Compiler compiler;
 
     DefinitionEnumerator(Compiler compiler) {
-      this.passUnderTest = new NameBasedDefinitionProvider(compiler);
+      this.passUnderTest = new NameBasedDefinitionProvider(compiler, true);
       this.compiler = compiler;
     }
 
@@ -392,7 +393,7 @@ public final class NameBasedDefinitionProviderTest extends CompilerTestCase {
         Definition definition = defSite.definition;
         StringBuilder sb = new StringBuilder();
         sb.append("DEF ");
-        sb.append(node.getType());
+        sb.append(node.getToken());
         sb.append(" ");
         sb.append(node.getQualifiedName());
         sb.append(" -> ");
@@ -403,7 +404,7 @@ public final class NameBasedDefinitionProviderTest extends CompilerTestCase {
 
         Node rValue = definition.getRValue();
         if (rValue != null) {
-          sb.append(rValue.getType());
+          sb.append(rValue.getToken());
         } else {
           sb.append("<null>");
         }
@@ -423,7 +424,7 @@ public final class NameBasedDefinitionProviderTest extends CompilerTestCase {
       if (defs != null) {
         StringBuilder sb = new StringBuilder();
         sb.append("USE ");
-        sb.append(node.getType());
+        sb.append(node.getToken());
         sb.append(" ");
         sb.append(node.getQualifiedName());
         sb.append(" -> ");
@@ -433,7 +434,7 @@ public final class NameBasedDefinitionProviderTest extends CompilerTestCase {
 
           Node rValue = def.getRValue();
           if (rValue != null) {
-            defstr = rValue.getType().toString();
+            defstr = rValue.getToken().toString();
           } else {
             defstr = "<null>";
           }

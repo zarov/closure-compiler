@@ -1003,6 +1003,7 @@ public final class IntegrationTest extends IntegrationTestCase {
 
     options.setClosurePass(true);
     options.setCollapseProperties(true);
+    options.setRemoveAbstractMethods(true);
     test(options, code, CLOSURE_COMPILED + " var x$bar = 3;");
   }
 
@@ -1105,6 +1106,7 @@ public final class IntegrationTest extends IntegrationTestCase {
     options.setCheckTypes(true);
     options.setDisambiguateProperties(true);
     options.setRemoveDeadCode(true);
+    options.setRemoveAbstractMethods(true);
     test(options,
         LINE_JOINER.join(
             "/** @const */ var goog = {};",
@@ -2835,14 +2837,15 @@ public final class IntegrationTest extends IntegrationTestCase {
     CompilerOptions options = createCompilerOptions();
     options.setCheckSymbols(false);
     options.addCustomPass(
-            CustomPassExecutionTime.BEFORE_OPTIMIZATIONS, new CompilerPass() {
-              @Override
-              public void process(Node externs, Node root) {
-                Node var = root.getLastChild().getFirstChild();
-                assertEquals(Token.VAR, var.getType());
-                var.detachFromParent();
-              }
-            });
+        CustomPassExecutionTime.BEFORE_OPTIMIZATIONS,
+        new CompilerPass() {
+          @Override
+          public void process(Node externs, Node root) {
+            Node var = root.getLastChild().getFirstChild();
+            assertEquals(Token.VAR, var.getToken());
+            var.detach();
+          }
+        });
 
 
     try {

@@ -507,7 +507,7 @@ class IRFactory {
   }
 
   private static boolean isBreakTarget(Node n) {
-    switch (n.getType()) {
+    switch (n.getToken()) {
       case FOR:
       case FOR_OF:
       case WHILE:
@@ -520,7 +520,7 @@ class IRFactory {
   }
 
   private static boolean isContinueTarget(Node n) {
-    switch (n.getType()) {
+    switch (n.getToken()) {
       case FOR:
       case FOR_OF:
       case WHILE:
@@ -850,7 +850,7 @@ class IRFactory {
   void setSourceInfo(Node node, Node ref) {
     node.setLineno(ref.getLineno());
     node.setCharno(ref.getCharno());
-    maybeSetLengthFrom(node, ref);
+    setLengthFrom(node, ref);
   }
 
   void setSourceInfo(Node irNode, ParseTree node) {
@@ -874,7 +874,7 @@ class IRFactory {
       node.setLineno(lineno);
       int charno = charno(start);
       node.setCharno(charno);
-      maybeSetLength(node, start, end);
+      setLength(node, start, end);
     }
   }
 
@@ -936,17 +936,13 @@ class IRFactory {
   }
 
   // Set the length on the node if we're in IDE mode.
-  void maybeSetLength(
+  void setLength(
       Node node, SourcePosition start, SourcePosition end) {
-    if (config.preserveDetailedSourceInfo == Config.SourceLocationInformation.PRESERVE) {
-      node.setLength(end.offset - start.offset);
-    }
+    node.setLength(end.offset - start.offset);
   }
 
-  void maybeSetLengthFrom(Node node, Node ref) {
-    if (config.preserveDetailedSourceInfo == Config.SourceLocationInformation.PRESERVE) {
-      node.setLength(ref.getLength());
-    }
+  void setLengthFrom(Node node, Node ref) {
+    node.setLength(ref.getLength());
   }
 
   private class TransformDispatcher {
@@ -1088,7 +1084,7 @@ class IRFactory {
       if (n == null) {
         return false;
       }
-      Token nType = n.getType();
+      Token nType = n.getToken();
       return nType == Token.EXPR_RESULT &&
           n.getFirstChild().isString() &&
           ALLOWED_DIRECTIVES.contains(n.getFirstChild().getString());
@@ -1165,7 +1161,7 @@ class IRFactory {
       Node initializer = transform(loopNode.initializer);
       ImmutableSet<Token> invalidInitializers =
           ImmutableSet.of(Token.ARRAYLIT, Token.OBJECTLIT);
-      if (invalidInitializers.contains(initializer.getType())) {
+      if (invalidInitializers.contains(initializer.getToken())) {
         errorReporter.error("Invalid LHS for a for-in loop", sourceName,
             lineno(loopNode.initializer), charno(loopNode.initializer));
       }
@@ -1181,7 +1177,7 @@ class IRFactory {
       Node initializer = transform(loopNode.initializer);
       ImmutableSet<Token> invalidInitializers =
           ImmutableSet.of(Token.ARRAYLIT, Token.OBJECTLIT);
-      if (invalidInitializers.contains(initializer.getType())) {
+      if (invalidInitializers.contains(initializer.getToken())) {
         errorReporter.error("Invalid LHS for a for-of loop", sourceName,
             lineno(loopNode.initializer), charno(loopNode.initializer));
       }
@@ -1493,7 +1489,7 @@ class IRFactory {
     Node processNameWithInlineJSDoc(IdentifierToken identifierToken) {
       JSDocInfo info = handleInlineJsDoc(identifierToken);
       maybeWarnReservedKeyword(identifierToken);
-      Node node = newStringNode(Token.NAME, identifierToken.toString());
+      Node node = newStringNode(Token.NAME, identifierToken.value);
       if (info != null) {
         node.setJSDocInfo(info);
       }
@@ -1512,7 +1508,7 @@ class IRFactory {
     }
 
     private void maybeWarnReservedKeyword(IdentifierToken token) {
-      String identifier = token.toString();
+      String identifier = token.value;
       boolean isIdentifier = false;
       if (TokenStream.isKeyword(identifier)) {
         features = features.require(Feature.ES3_KEYWORDS_AS_IDENTIFIERS);
@@ -1990,7 +1986,7 @@ class IRFactory {
       if (decl.initializer != null) {
         Node initializer = transform(decl.initializer);
         lhs.addChildToBack(initializer);
-        maybeSetLength(lhs, decl.location.start, decl.location.end);
+        setLength(lhs, decl.location.start, decl.location.end);
       }
       maybeProcessType(lhs, decl.declaredType);
       return lhs;
@@ -2403,8 +2399,7 @@ class IRFactory {
       maybeWarnTypeSyntax(tree, Feature.INDEX_SIGNATURE);
       Node name = transform(tree.name);
       Node indexType = name.getDeclaredTypeExpression();
-      if (indexType.getType() != Token.NUMBER_TYPE
-          && indexType.getType() != Token.STRING_TYPE) {
+      if (indexType.getToken() != Token.NUMBER_TYPE && indexType.getToken() != Token.STRING_TYPE) {
         errorReporter.error(
             "Index signature parameter type must be 'string' or 'number'",
             sourceName,
@@ -2461,7 +2456,7 @@ class IRFactory {
                   charno(param));
               good = false;
             }
-            if (type != null && type.getType() != Token.ARRAY_TYPE) {
+            if (type != null && type.getToken() != Token.ARRAY_TYPE) {
               errorReporter.error(
                   "A rest parameter must be of an array type.",
                   sourceName,
@@ -2492,14 +2487,14 @@ class IRFactory {
           switch (param.type) {
             case IDENTIFIER_EXPRESSION:
               requiredParams.put(
-                  param.asIdentifierExpression().identifierToken.toString(),
+                  param.asIdentifierExpression().identifierToken.value,
                   type);
               break;
             case OPTIONAL_PARAMETER:
               maybeWarnTypeSyntax(param, Feature.OPTIONAL_PARAMETER);
               optionalParams.put(
                   param.asOptionalParameter().param.asIdentifierExpression()
-                      .identifierToken.toString(),
+                      .identifierToken.value,
                   type);
               break;
             case REST_PARAMETER:
@@ -2511,7 +2506,7 @@ class IRFactory {
                       .assignmentTarget
                       .asIdentifierExpression()
                       .identifierToken
-                      .toString();
+                      .value;
               restType = type;
               break;
             default:

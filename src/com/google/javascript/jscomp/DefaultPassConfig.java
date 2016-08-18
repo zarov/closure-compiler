@@ -23,9 +23,11 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.javascript.jscomp.AbstractCompiler.LifeCycleStage;
+import com.google.javascript.jscomp.AbstractCompiler.MostRecentTypechecker;
 import com.google.javascript.jscomp.CompilerOptions.ExtractPrototypeMemberDeclarationsMode;
 import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
 import com.google.javascript.jscomp.CoverageInstrumentationPass.CoverageReach;
+import com.google.javascript.jscomp.CoverageInstrumentationPass.InstrumentOption;
 import com.google.javascript.jscomp.ExtractPrototypeMemberDeclarations.Pattern;
 import com.google.javascript.jscomp.NodeTraversal.Callback;
 import com.google.javascript.jscomp.PassFactory.HotSwapPassFactory;
@@ -184,6 +186,43 @@ public final class DefaultPassConfig extends PassConfig {
   }
 
   @Override
+  protected List<PassFactory> getTranspileOnlyPasses() {
+    List<PassFactory> passes = new ArrayList<>();
+
+    if (options.getLanguageIn() == LanguageMode.ECMASCRIPT6_TYPED
+        && options.getLanguageOut() != LanguageMode.ECMASCRIPT6_TYPED) {
+      passes.add(convertEs6TypedToEs6);
+    }
+
+    passes.add(checkMissingSuper);
+    passes.add(checkVariableReferencesForTranspileOnly);
+
+    // It's important that the Dart super accessors pass run *before* es6ConvertSuper,
+    // which is a "late" ES6 pass. This is enforced in the assertValidOrder method.
+    if (options.dartPass && !options.getLanguageOut().isEs6OrHigher()) {
+      passes.add(dartSuperAccessorsPass);
+    }
+
+    if (options.getLanguageIn().isEs6OrHigher() && !options.skipTranspilationAndCrash) {
+      TranspilationPasses.addEs6EarlyPasses(passes);
+      TranspilationPasses.addEs6LatePasses(passes);
+      passes.add(markTranspilationDone);
+    }
+
+    if (options.raiseToEs6Typed()) {
+      passes.add(convertToTypedES6);
+    }
+
+    if (!options.forceLibraryInjection.isEmpty()) {
+      passes.add(injectRuntimeLibraries);
+    }
+
+    assertAllOneTimePasses(passes);
+    assertValidOrder(passes);
+    return passes;
+  }
+
+  @Override
   protected List<PassFactory> getWhitespaceOnlyPasses() {
     List<PassFactory> passes = new ArrayList<>();
     if (options.wrapGoogModulesForWhitespaceOnly) {
@@ -224,17 +263,22 @@ public final class DefaultPassConfig extends PassConfig {
       checks.add(lintChecks);
     }
 
-    if (!options.skipNonTranspilationPasses && options.closurePass
-        && options.enables(DiagnosticGroups.LINT_CHECKS)) {
+    if (options.closurePass && options.enables(DiagnosticGroups.LINT_CHECKS)) {
       checks.add(checkRequiresAndProvidesSorted);
     }
 
-    if (!options.skipNonTranspilationPasses && options.closurePass) {
+    if (options.enables(DiagnosticGroups.MISSING_REQUIRE)
+        || options.enables(DiagnosticGroups.STRICT_MISSING_REQUIRE)
+        || options.enables(DiagnosticGroups.EXTRA_REQUIRE)) {
+      checks.add(checkRequires);
+    }
+
+    if (options.closurePass) {
       checks.add(closureCheckModule);
       checks.add(closureRewriteModule);
     }
 
-    if (!options.skipNonTranspilationPasses && options.declaredGlobalExternsOnWindow) {
+    if (options.declaredGlobalExternsOnWindow) {
       checks.add(declaredGlobalExternsOnWindow);
     }
 
@@ -246,86 +290,71 @@ public final class DefaultPassConfig extends PassConfig {
     checks.add(checkMissingSuper);
     checks.add(checkVariableReferences);
 
-    if (!options.skipNonTranspilationPasses && options.closurePass) {
+    if (options.closurePass) {
       checks.add(closureGoogScopeAliases);
       checks.add(closureRewriteClass);
     }
 
-    // TODO(tbreisacher): Move this to before closureCheckModule so that it can operate on the
-    // original source tree, instead of the goog.scope/goog.module-rewritten one.
-    if (options.enables(DiagnosticGroups.MISSING_REQUIRE)
-        || options.enables(DiagnosticGroups.STRICT_MISSING_REQUIRE)
-        || options.enables(DiagnosticGroups.EXTRA_REQUIRE)) {
-      checks.add(checkRequires);
-    }
-
-    if (!options.skipNonTranspilationPasses) {
-      checks.add(checkSideEffects);
-    }
+    checks.add(checkSideEffects);
 
     if (options.enables(DiagnosticGroups.MISSING_PROVIDE)) {
       checks.add(checkProvides);
     }
 
-    if (options.jqueryPass && !options.skipNonTranspilationPasses) {
+    if (options.jqueryPass) {
       checks.add(jqueryAliases);
     }
 
-    if (options.angularPass && !options.skipNonTranspilationPasses) {
+    if (options.angularPass) {
       checks.add(angularPass);
     }
 
-    if (!options.generateExportsAfterTypeChecking
-        && options.generateExports && !options.skipNonTranspilationPasses) {
+    if (!options.generateExportsAfterTypeChecking && options.generateExports) {
       checks.add(generateExports);
     }
 
-    if (options.exportTestFunctions && !options.skipNonTranspilationPasses) {
+    if (options.exportTestFunctions) {
       checks.add(exportTestFunctions);
     }
 
-    if (options.closurePass && !options.skipNonTranspilationPasses) {
+    if (options.closurePass) {
       checks.add(closurePrimitives);
     }
 
     // It's important that the PolymerPass run *after* the ClosurePrimitives
     // rewrite and *before* the suspicious code checks.
     // This is enforced in the assertValidOrder method.
-    if (options.polymerPass && !options.skipNonTranspilationPasses) {
+    if (options.polymerPass) {
       checks.add(polymerPass);
     }
 
-    if ((options.checkSuspiciousCode
-            || options.enables(DiagnosticGroups.GLOBAL_THIS)
-            || options.enables(DiagnosticGroups.DEBUGGER_STATEMENT_PRESENT))
-        && !options.skipNonTranspilationPasses) {
+    if (options.checkSuspiciousCode
+        || options.enables(DiagnosticGroups.GLOBAL_THIS)
+        || options.enables(DiagnosticGroups.DEBUGGER_STATEMENT_PRESENT)) {
       checks.add(suspiciousCode);
     }
 
-    if (options.closurePass && options.checkMissingGetCssNameLevel.isOn()
-        && !options.skipNonTranspilationPasses) {
+    if (options.closurePass && options.checkMissingGetCssNameLevel.isOn()) {
       checks.add(closureCheckGetCssName);
     }
 
-    if (options.syntheticBlockStartMarker != null && !options.skipNonTranspilationPasses) {
+    if (options.syntheticBlockStartMarker != null) {
       // This pass must run before the first fold constants pass.
       checks.add(createSyntheticBlocks);
     }
 
-    if (!options.skipNonTranspilationPasses) {
-      checks.add(checkVars);
-    }
+    checks.add(checkVars);
 
-    if (options.inferConsts && !options.skipNonTranspilationPasses) {
+    if (options.inferConsts) {
       checks.add(inferConsts);
     }
 
-    if (options.computeFunctionSideEffects && !options.skipNonTranspilationPasses) {
+    if (options.computeFunctionSideEffects) {
       checks.add(checkRegExp);
     }
 
     // This pass should run before types are assigned.
-    if (options.processObjectPropertyString && !options.skipNonTranspilationPasses) {
+    if (options.processObjectPropertyString) {
       checks.add(objectPropertyStringPreprocess);
     }
 
@@ -337,7 +366,6 @@ public final class DefaultPassConfig extends PassConfig {
 
     if (options.getLanguageIn().isEs6OrHigher() && !options.skipTranspilationAndCrash) {
       checks.add(es6ExternsCheck);
-      checks.add(es6SuperCheck);
       TranspilationPasses.addEs6EarlyPasses(checks);
     }
 
@@ -369,17 +397,15 @@ public final class DefaultPassConfig extends PassConfig {
       checks.add(newTypeInference);
     }
 
+    if (options.j2clPassMode.equals(CompilerOptions.J2clPassMode.AUTO)) {
+      checks.add(j2clSourceFileChecker);
+    }
+
     if (!options.allowsHotswapReplaceScript()) {
       checks.add(inlineTypeAliases);
     }
 
     if (!options.getNewTypeInference()) {
-      addOldTypeCheckerPasses(checks, options);
-    }
-
-    // NOTE(dimvar): This will move later into the checks as we convert checks
-    // to handle types from the new type inference
-    if (options.getNewTypeInference()) {
       addOldTypeCheckerPasses(checks, options);
     }
 
@@ -399,7 +425,10 @@ public final class DefaultPassConfig extends PassConfig {
       checks.add(checkAccessControls);
     }
 
-    checks.add(checkConsts);
+    if (!options.getNewTypeInference()) {
+      // NTI performs this check already
+      checks.add(checkConsts);
+    }
 
     // Analyzer checks must be run after typechecking.
     if (options.enables(DiagnosticGroups.ANALYZER_CHECKS)) {
@@ -416,6 +445,12 @@ public final class DefaultPassConfig extends PassConfig {
 
     if (options.enables(DiagnosticGroups.ES5_STRICT)) {
       checks.add(checkStrictMode);
+    }
+
+    // NOTE(dimvar): This will move later into the checks as we convert checks
+    // to handle types from the new type inference
+    if (options.getNewTypeInference()) {
+      addOldTypeCheckerPasses(checks, options);
     }
 
     if (!options.getConformanceConfigs().isEmpty()) {
@@ -454,10 +489,6 @@ public final class DefaultPassConfig extends PassConfig {
     if (options.instrumentationTemplate != null ||
         options.recordFunctionInformation) {
       checks.add(computeFunctionNames);
-    }
-
-    if (options.j2clPassMode.equals(CompilerOptions.J2clPassMode.AUTO)) {
-      checks.add(j2clSourceFileChecker);
     }
 
     checks.add(createEmptyPass("afterStandardChecks"));
@@ -660,6 +691,11 @@ public final class DefaultPassConfig extends PassConfig {
 
     passes.addAll(getMainOptimizationLoop());
     passes.add(createEmptyPass("afterMainOptimizations"));
+
+    // Must run after ProcessClosurePrimitives, Es6ConvertSuper, and assertion removals.
+    if (options.removeSuperMethods) {
+      passes.add(removeSuperMethodsPass);
+    }
 
     passes.add(createEmptyPass("beforeModuleMotion"));
 
@@ -1050,6 +1086,27 @@ public final class DefaultPassConfig extends PassConfig {
         checkVariableReferences,
         closureGoogScopeAliases,
         "Variable checking must happen before goog.scope processing.");
+
+    assertPassOrder(
+        checks,
+        TranspilationPasses.es6ConvertSuper,
+        removeSuperMethodsPass,
+        "Super-call method removal must run after Es6 super rewriting, "
+            + "because Es6 super calls are matched on their post-processed form.");
+
+    assertPassOrder(
+        checks,
+        closurePrimitives,
+        removeSuperMethodsPass,
+        "Super-call method removal must run after Es6 super rewriting, "
+            + "because Closure base calls are expected to be in post-processed form.");
+
+    assertPassOrder(
+        checks,
+        closureCodeRemoval,
+        removeSuperMethodsPass,
+        "Super-call method removal must run after closure code removal, because "
+            + "removing assertions may make more super calls eligible to be stripped.");
   }
 
   /** Checks that all constructed classes are goog.require()d. */
@@ -1258,14 +1315,6 @@ public final class DefaultPassConfig extends PassConfig {
         @Override
         protected CompilerPass create(final AbstractCompiler compiler) {
           return new Es6ExternsCheck(compiler);
-        }
-      };
-
-  private final PassFactory es6SuperCheck =
-      new PassFactory("es6SuperCheck", true) {
-        @Override
-        protected CompilerPass create(final AbstractCompiler compiler) {
-          return new Es6SuperCheck(compiler);
         }
       };
 
@@ -1501,6 +1550,15 @@ public final class DefaultPassConfig extends PassConfig {
   };
 
   /** Checks that references to variables look reasonable. */
+  private final HotSwapPassFactory checkVariableReferencesForTranspileOnly =
+      new HotSwapPassFactory("checkVariableReferences", true) {
+    @Override
+    protected HotSwapCompilerPass create(AbstractCompiler compiler) {
+      return new VariableReferenceCheck(compiler, true);
+    }
+  };
+
+  /** Checks that references to variables look reasonable. */
   private final HotSwapPassFactory checkVariableReferences =
       new HotSwapPassFactory("checkVariableReferences", true) {
     @Override
@@ -1712,6 +1770,7 @@ public final class DefaultPassConfig extends PassConfig {
 
     @Override
     public void process(Node externs, Node root) {
+      this.compiler.setMostRecentTypechecker(MostRecentTypechecker.OTI);
       if (topScope == null) {
         regenerateGlobalTypedScope(compiler, root.getParent());
       } else {
@@ -2576,8 +2635,12 @@ public final class DefaultPassConfig extends PassConfig {
         @Override
         protected CompilerPass create(final AbstractCompiler compiler) {
           // TODO(johnlenz): make global instrumentation an option
-          return new CoverageInstrumentationPass(
-              compiler, CoverageReach.CONDITIONAL);
+          if (options.instrumentBranchCoverage) {
+            return new CoverageInstrumentationPass(
+                compiler, CoverageReach.CONDITIONAL, InstrumentOption.BRANCH_ONLY);
+          } else {
+            return new CoverageInstrumentationPass(compiler, CoverageReach.CONDITIONAL);
+          }
         }
       };
 
@@ -2737,4 +2800,11 @@ public final class DefaultPassConfig extends PassConfig {
         }
       };
 
+  private final PassFactory removeSuperMethodsPass =
+      new PassFactory("removeSuperMethods", true) {
+        @Override
+        protected CompilerPass create(AbstractCompiler compiler) {
+          return new RemoveSuperMethodsPass(compiler);
+        }
+      };
 }

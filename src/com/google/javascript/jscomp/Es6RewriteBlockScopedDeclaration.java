@@ -28,7 +28,6 @@ import com.google.javascript.rhino.JSDocInfoBuilder;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -111,16 +110,20 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
 
   @Override
   public void process(Node externs, Node root) {
-    NodeTraversal.traverseRootsEs6(compiler, new CollectUndeclaredNames(), externs, root);
-    NodeTraversal.traverseRootsEs6(compiler, this, externs, root);
-    NodeTraversal.traverseRootsEs6(compiler, new Es6RenameReferences(renameMap), externs, root);
-
+    // Since block-scoped function declarations can appear in any language mode, we need to run
+    // this pass unconditionally.
+    NodeTraversal.traverseEs6(compiler, root, new CollectUndeclaredNames());
+    NodeTraversal.traverseEs6(compiler, root, this);
+    // Needed for let / const declarations in .d.ts externs.
+    TranspilationPasses.processTranspile(compiler, externs, this);
+    NodeTraversal.traverseEs6(compiler, root, new Es6RenameReferences(renameMap));
     LoopClosureTransformer transformer = new LoopClosureTransformer();
-    NodeTraversal.traverseRootsEs6(compiler, transformer, externs, root);
+    NodeTraversal.traverseEs6(compiler, root, transformer);
     transformer.transformLoopClosure();
     varify();
-    NodeTraversal.traverseRootsEs6(
-        compiler, new RewriteBlockScopedFunctionDeclaration(), externs, root);
+    TranspilationPasses.processTranspile(
+        compiler, externs, new RewriteBlockScopedFunctionDeclaration());
+    NodeTraversal.traverseEs6(compiler, root, new RewriteBlockScopedFunctionDeclaration());
   }
 
   @Override
@@ -128,7 +131,6 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
     NodeTraversal.traverseEs6(compiler, scriptRoot, new CollectUndeclaredNames());
     NodeTraversal.traverseEs6(compiler, scriptRoot, this);
     NodeTraversal.traverseEs6(compiler, scriptRoot, new Es6RenameReferences(renameMap));
-
     LoopClosureTransformer transformer = new LoopClosureTransformer();
     NodeTraversal.traverseEs6(compiler, scriptRoot, transformer);
     transformer.transformLoopClosure();
@@ -142,19 +144,20 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
    */
   private boolean inLoop(Node n) {
     Node enclosingNode = NodeUtil.getEnclosingNode(n, loopPredicate);
-    return enclosingNode != null && enclosingNode.getType() != Token.FUNCTION;
+    return enclosingNode != null && enclosingNode.getToken() != Token.FUNCTION;
   }
 
-  private static final Predicate<Node> loopPredicate = new Predicate<Node>() {
-    @Override
-    public boolean apply(Node n) {
-      return n.getType() == Token.WHILE
-          || n.getType() == Token.FOR
-          || n.getType() == Token.FOR_OF
-          || n.getType() == Token.DO
-          || n.getType() == Token.FUNCTION;
-    }
-  };
+  private static final Predicate<Node> loopPredicate =
+      new Predicate<Node>() {
+        @Override
+        public boolean apply(Node n) {
+          return n.getToken() == Token.WHILE
+              || n.getToken() == Token.FOR
+              || n.getToken() == Token.FOR_OF
+              || n.getToken() == Token.DO
+              || n.getToken() == Token.FUNCTION;
+        }
+      };
 
   private static void extractInlineJSDoc(Node srcDeclaration, Node srcName, Node destDeclaration) {
     JSDocInfo existingInfo = srcDeclaration.getJSDocInfo();
@@ -183,7 +186,7 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
     // Normalize: "const i = 0, j = 0;" becomes "/** @const */ var i = 0; /** @const */ var j = 0;"
     while (declarationList.hasMoreThanOneChild()) {
       Node name = declarationList.getLastChild();
-      Node newDeclaration = IR.var(name.detachFromParent()).useSourceInfoFrom(declarationList);
+      Node newDeclaration = IR.var(name.detach()).useSourceInfoFrom(declarationList);
       maybeAddConstJSDoc(declarationList, parent, name, newDeclaration);
       parent.addChildAfter(newDeclaration, declarationList);
     }

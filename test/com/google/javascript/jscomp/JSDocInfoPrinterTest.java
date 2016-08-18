@@ -27,7 +27,6 @@ import com.google.javascript.rhino.JSDocInfoBuilder;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import junit.framework.TestCase;
 
 /**
@@ -64,6 +63,12 @@ public final class JSDocInfoPrinterTest extends TestCase {
     assertEquals("/** */ ", JSDocInfoPrinter.print(info));
   }
 
+  public void testFinal() {
+    builder.recordFinality();
+    JSDocInfo info = builder.buildAndReset();
+    assertEquals("/** @final */ ", JSDocInfoPrinter.print(info));
+  }
+
   /**
    * test case for the @record tag
    */
@@ -98,6 +103,11 @@ public final class JSDocInfoPrinterTest extends TestCase {
         new JSTypeExpression(new Node(Token.ELLIPSIS, IR.string("number")), ""));
     info = builder.buildAndReset();
     assertEquals("/**\n @param {...number} foo\n */\n", JSDocInfoPrinter.print(info));
+
+    builder.recordParameter("foo",
+        new JSTypeExpression(new Node(Token.ELLIPSIS, IR.empty()), ""));
+    info = builder.buildAndReset();
+    assertEquals("/**\n @param {...} foo\n */\n", JSDocInfoPrinter.print(info));
 
     builder.recordParameter("foo", null);
     info = builder.buildAndReset();

@@ -87,6 +87,17 @@ public abstract class AbstractCompiler implements SourceExcerptProvider {
    */
   abstract List<CompilerInput> getInputsInOrder();
 
+  static enum MostRecentTypechecker {
+    NONE,
+    OTI,
+    NTI
+  }
+
+  /**
+   * Sets the type-checking pass that ran most recently.
+   */
+  abstract void setMostRecentTypechecker(MostRecentTypechecker mostRecent);
+
   /**
    * Gets a central registry of type information from the compiled JS.
    */
@@ -178,8 +189,6 @@ public abstract class AbstractCompiler implements SourceExcerptProvider {
    * Used only by the new type inference
    */
   abstract CompilerPass getSymbolTable();
-
-  abstract void setSymbolTable(CompilerPass symbolTable);
 
   /**
    * Used by three passes that run in sequence (optimize-returns,

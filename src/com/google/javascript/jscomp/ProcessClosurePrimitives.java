@@ -221,7 +221,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
     }
 
     for (Node closureRequire : requiresToBeRemoved) {
-      closureRequire.detachFromParent();
+      closureRequire.detach();
       compiler.reportCodeChange();
     }
   }
@@ -233,7 +233,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
     Node parent = n.getParent();
     Preconditions.checkState(parent.isExprResult());
     String name = n.getSecondChild().getString();
-    Node value = n.getChildAtIndex(2).detachFromParent();
+    Node value = n.getChildAtIndex(2).detach();
 
     Node replacement = NodeUtil.newQNameDeclaration(
         compiler, name, value, n.getJSDocInfo());
@@ -251,7 +251,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
 
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
-    switch (n.getType()) {
+    switch (n.getToken()) {
       case CALL:
         Node left = n.getFirstChild();
         if (left.isGetProp()) {
@@ -386,7 +386,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
   }
 
   static boolean isValidDefineValue(Node val) {
-    switch (val.getType()) {
+    switch (val.getToken()) {
       case STRING:
       case NUMBER:
       case TRUE:
@@ -1108,7 +1108,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
     if (typeDeclaration != null) {
       compiler.forwardDeclareType(typeDeclaration);
       // Forward declaration was recorded and we can remove the call.
-      parent.detachFromParent();
+      parent.detach();
       compiler.reportCodeChange();
     }
   }
@@ -1144,7 +1144,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
    */
   private boolean verifyOfType(NodeTraversal t, Node methodName,
       Node arg, Token desiredType) {
-    if (arg.getType() != desiredType) {
+    if (arg.getToken() != desiredType) {
       compiler.report(
           t.makeError(methodName,
               INVALID_ARGUMENT_ERROR, methodName.getQualifiedName()));
@@ -1336,11 +1336,11 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
           JSTypeExpression expr = info.getType();
           if (expr != null) {
             Node n = expr.getRoot();
-            if (n.getType() == Token.BANG) {
+            if (n.getToken() == Token.BANG) {
               n = n.getFirstChild();
             }
-            if (n.getType() == Token.STRING
-                && !n.hasChildren()  // templated object types are ok.
+            if (n.getToken() == Token.STRING
+                && !n.hasChildren() // templated object types are ok.
                 && n.getString().equals("Object")) {
               compiler.report(
                   JSError.make(candidateDefinition, WEAK_NAMESPACE_TYPE));
@@ -1362,7 +1362,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
             assignNode.removeChild(valueNode);
             nameNode.addChildToFront(valueNode);
             Node varNode = IR.var(nameNode);
-            varNode.copyInformationFrom(candidateDefinition);
+            varNode.useSourceInfoFrom(candidateDefinition);
             candidateDefinition.getParent().replaceChild(
                 candidateDefinition, varNode);
             varNode.setJSDocInfo(assignNode.getJSDocInfo());
@@ -1399,7 +1399,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
         if (preserveGoogProvidesAndRequires && explicitNode.hasChildren()) {
           return;
         }
-        explicitNode.detachFromParent();
+        explicitNode.detach();
         compiler.reportCodeChange();
       }
     }
@@ -1477,9 +1477,8 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
      */
     private void setSourceInfo(Node newNode) {
       Node provideStringNode = getProvideStringNode();
-      int offset = getSourceInfoOffset(provideStringNode);
-      Node sourceInfoNode = provideStringNode == null
-          ? firstNode : provideStringNode;
+      int offset = provideStringNode == null ? 0 : getSourceInfoOffset();
+      Node sourceInfoNode = provideStringNode == null ? firstNode : provideStringNode;
       newNode.copyInformationFromForTree(sourceInfoNode);
       if (offset != 0) {
         newNode.setSourceEncodedPositionForTree(
@@ -1490,11 +1489,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
     /**
      * Get the offset into the provide node where the symbol appears.
      */
-    private int getSourceInfoOffset(Node provideStringNode) {
-      if (provideStringNode == null) {
-        return 0;
-      }
-
+    private int getSourceInfoOffset() {
       int indexOfLastDot = namespace.lastIndexOf('.');
 
       // +1 for the opening quote

@@ -40,9 +40,9 @@ import junit.framework.TestCase;
 
 public final class SymbolTableTest extends TestCase {
 
-  private static final String EXTERNS = CompilerTypeTestCase.DEFAULT_EXTERNS +
-      "var Number;" +
-      "\nfunction customExternFn(customExternArg) {}";
+  private static final String EXTERNS = CompilerTypeTestCase.DEFAULT_EXTERNS
+      + "var Number;"
+      + "\nfunction customExternFn(customExternArg) {}";
 
   private CompilerOptions options;
 
@@ -55,7 +55,11 @@ public final class SymbolTableTest extends TestCase {
     CompilationLevel.SIMPLE_OPTIMIZATIONS.setOptionsForCompilationLevel(
         options);
     WarningLevel.VERBOSE.setOptionsForWarningLevel(options);
-    options.setIdeMode(true);
+    options.setChecksOnly(true);
+    options.setPreserveDetailedSourceInfo(true);
+    options.setContinueAfterErrors(true);
+    options.setAllowHotswapReplaceScript(true);
+    options.setParseJsDocDocumentation(true);
   }
 
   public void testGlobalVar() throws Exception {
@@ -120,8 +124,8 @@ public final class SymbolTableTest extends TestCase {
 
     assertThat(refs).hasSize(2);
     assertEquals(x.getDeclaration(), refs.get(0));
-    assertEquals(Token.VAR, refs.get(0).getNode().getParent().getType());
-    assertEquals(Token.ASSIGN, refs.get(1).getNode().getParent().getType());
+    assertEquals(Token.VAR, refs.get(0).getNode().getParent().getToken());
+    assertEquals(Token.ASSIGN, refs.get(1).getNode().getParent().getToken());
   }
 
   public void testLocalVarReferences() throws Exception {
@@ -132,8 +136,8 @@ public final class SymbolTableTest extends TestCase {
 
     assertThat(refs).hasSize(2);
     assertEquals(x.getDeclaration(), refs.get(0));
-    assertEquals(Token.PARAM_LIST, refs.get(0).getNode().getParent().getType());
-    assertEquals(Token.RETURN, refs.get(1).getNode().getParent().getType());
+    assertEquals(Token.PARAM_LIST, refs.get(0).getNode().getParent().getToken());
+    assertEquals(Token.RETURN, refs.get(1).getNode().getParent().getToken());
   }
 
   public void testLocalThisReferences() throws Exception {
@@ -152,9 +156,8 @@ public final class SymbolTableTest extends TestCase {
 
   public void testLocalThisReferences2() throws Exception {
     SymbolTable table = createSymbolTable(
-        "/** @constructor */ function F() {}" +
-        "F.prototype.baz = " +
-        "    function() { this.foo = 3; this.bar = 5; };");
+        "/** @constructor */ function F() {}\n"
+            + "F.prototype.baz = function() { this.foo = 3; this.bar = 5; };");
 
     Symbol baz = getGlobalVar(table, "F.prototype.baz");
     assertNotNull(baz);
@@ -485,7 +488,7 @@ public final class SymbolTableTest extends TestCase {
 
     List<Reference> refs = table.getReferenceList(fooPrototype);
     assertThat(refs).hasSize(1);
-    assertEquals(Token.NAME, refs.get(0).getNode().getType());
+    assertEquals(Token.NAME, refs.get(0).getNode().getToken());
 
     // Make sure that the ctor and its prototype are declared at the
     // same node.
@@ -504,7 +507,7 @@ public final class SymbolTableTest extends TestCase {
     List<Reference> refs = ImmutableList.copyOf(
         table.getReferences(fooPrototype));
     assertThat(refs).hasSize(1);
-    assertEquals(Token.GETPROP, refs.get(0).getNode().getType());
+    assertEquals(Token.GETPROP, refs.get(0).getNode().getToken());
     assertEquals("Foo.prototype", refs.get(0).getNode().getQualifiedName());
   }
 
@@ -516,7 +519,7 @@ public final class SymbolTableTest extends TestCase {
 
     List<Reference> refs = table.getReferenceList(fooPrototype);
     assertThat(refs).hasSize(1);
-    assertEquals(Token.GETPROP, refs.get(0).getNode().getType());
+    assertEquals(Token.GETPROP, refs.get(0).getNode().getToken());
 
     // Make sure that the ctor and its prototype are declared at the
     // same node.
@@ -1151,7 +1154,7 @@ public final class SymbolTableTest extends TestCase {
     Symbol global = getGlobalVar(table, SymbolTable.GLOBAL_THIS);
     assertNotNull(global);
     assertNotNull(global.getDeclaration());
-    assertEquals(Token.SCRIPT, global.getDeclaration().getNode().getType());
+    assertEquals(Token.SCRIPT, global.getDeclaration().getNode().getToken());
 
     List<Reference> globalRefs = table.getReferenceList(global);
 

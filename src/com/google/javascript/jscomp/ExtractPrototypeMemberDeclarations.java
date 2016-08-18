@@ -174,13 +174,17 @@ class ExtractPrototypeMemberDeclarations implements CompilerPass {
     String className = first.qualifiedClassName;
     if (pattern == Pattern.USE_GLOBAL_TEMP) {
       // Use the temp variable to hold the prototype.
-      Node stmt = new Node(first.node.getType(),
-         IR.assign(
-              IR.name(prototypeAlias),
-              NodeUtil.newQName(
-                  compiler, className + ".prototype",
-                  instance.parent, className + ".prototype")))
-          .useSourceInfoIfMissingFromForTree(first.node);
+      Node stmt =
+          new Node(
+                  first.node.getToken(),
+                  IR.assign(
+                      IR.name(prototypeAlias),
+                      NodeUtil.newQName(
+                          compiler,
+                          className + ".prototype",
+                          instance.parent,
+                          className + ".prototype")))
+              .useSourceInfoIfMissingFromForTree(first.node);
 
       instance.parent.addChildBefore(stmt, first.node);
     } else if (pattern == Pattern.USE_IIFE){
@@ -196,11 +200,11 @@ class ExtractPrototypeMemberDeclarations implements CompilerPass {
                instance.parent, className + ".prototype"));
       call.putIntProp(Node.FREE_CALL, 1);
 
-      Node stmt = new Node(first.node.getType(), call);
+      Node stmt = new Node(first.node.getToken(), call);
       stmt.useSourceInfoIfMissingFromForTree(first.node);
       instance.parent.addChildBefore(stmt, first.node);
       for (PrototypeMemberDeclaration declar : instance.declarations) {
-        block.addChildToBack(declar.node.detachFromParent());
+        block.addChildToBack(declar.node.detach());
       }
     }
     // Go thought each member declaration and replace it with an assignment
@@ -231,8 +235,8 @@ class ExtractPrototypeMemberDeclarations implements CompilerPass {
     Node accessNode = declar.lhs.getFirstFirstChild();
     String originalName = accessNode.getOriginalName();
     String className = originalName != null ? originalName : "?";
-    NodeUtil.setDebugInformation(name.getFirstChild(), lhs,
-                                 className + ".prototype");
+    name.getFirstChild().useSourceInfoFromForTree(lhs);
+    name.getFirstChild().setOriginalName(className + ".prototype");
 
     assignment.replaceChild(lhs, name);
   }

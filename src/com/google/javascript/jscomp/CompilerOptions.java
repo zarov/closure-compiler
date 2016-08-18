@@ -29,7 +29,6 @@ import com.google.javascript.jscomp.parsing.Config;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.SourcePosition;
-
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -149,18 +148,7 @@ public class CompilerOptions {
   private boolean useNewTypeInference;
 
   /**
-   * When this flag is enabled, we run OTI after NTI so that the AST is annotated with the old types
-   * instead of the new and susbsequent passes that use type information continue to get it from
-   * the old types. When disabled, we don't run OTI at all, so the AST stays annotated
-   * with the new types, and that is what subsequent passes use. It should only ever be disabled in
-   * tests that want to verify that a pass works with the new types.
-   * TODO(aravindpg): move this flag into CompilerTestCase in some form.
-   */
-  private boolean runOTIAfterNTI = true;
-
-  /**
-   * Relevant only when {@link #useNewTypeInference} and {@link #runOTIAfterNTI} are both true,
-   * where we normally disable OTI errors.
+   * Relevant only when {@link #useNewTypeInference} is true, where we normally disable OTI errors.
    * If you want both NTI and OTI errors in this case, set to true.
    * E.g. if using using a warnings guard to filter NTI or OTI warnings in new or legacy code,
    * respectively.
@@ -705,8 +693,11 @@ public class CompilerOptions {
   /** Processes the output of J2CL */
   J2clPassMode j2clPassMode;
 
-  /** Remove goog.abstractMethod assignments. */
+  /** Remove methods that only make a super call without changing the arguments. */
   boolean removeAbstractMethods;
+
+  /** Remove goog.abstractMethod assignments. */
+  boolean removeSuperMethods;
 
   /** Remove goog.asserts calls. */
   boolean removeClosureAsserts;
@@ -1005,6 +996,9 @@ public class CompilerOptions {
    */
   public boolean instrumentForCoverage;
 
+  /** Instrument branch coverage data - valid only if instrumentForCoverage is True */
+  public boolean instrumentBranchCoverage;
+
   String instrumentationTemplateFile;
 
   /** List of conformance configs to use in CheckConformance */
@@ -1136,7 +1130,8 @@ public class CompilerOptions {
     polymerPass = false;
     dartPass = false;
     j2clPassMode = J2clPassMode.OFF;
-    removeAbstractMethods = true;
+    removeAbstractMethods = false;
+    removeSuperMethods = false;
     removeClosureAsserts = false;
     stripTypes = Collections.emptySet();
     stripNameSuffixes = Collections.emptySet();
@@ -1168,6 +1163,7 @@ public class CompilerOptions {
     // Instrumentation
     instrumentationTemplate = null;  // instrument functions
     instrumentForCoverage = false;  // instrument lines
+    instrumentBranchCoverage = false; // instrument branches
     instrumentationTemplateFile = "";
 
     // Output
@@ -1542,6 +1538,10 @@ public class CompilerOptions {
     this.removeAbstractMethods = remove;
   }
 
+  public void setRemoveSuperMethods(boolean remove) {
+    this.removeSuperMethods = remove;
+  }
+
   public void setRemoveClosureAsserts(boolean remove) {
     this.removeClosureAsserts = remove;
   }
@@ -1606,12 +1606,12 @@ public class CompilerOptions {
 
   @Deprecated
   public void setJ2clPass(boolean flag) {
-    setJ2clPass(flag ? J2clPassMode.TRUE : J2clPassMode.FALSE);
+    setJ2clPass(flag ? J2clPassMode.ON : J2clPassMode.OFF);
   }
 
   public void setJ2clPass(J2clPassMode j2clPassMode) {
     this.j2clPassMode = j2clPassMode;
-    if (j2clPassMode.equals(J2clPassMode.ON) || j2clPassMode.equals(J2clPassMode.TRUE)) {
+    if (j2clPassMode.isExplicitlyOn()) {
       setWarningLevel(DiagnosticGroup.forType(SourceFile.DUPLICATE_ZIP_CONTENTS), CheckLevel.OFF);
     }
   }
@@ -1838,14 +1838,6 @@ public class CompilerOptions {
 
   public void setNewTypeInference(boolean enable) {
     this.useNewTypeInference = enable;
-  }
-
-  public boolean getRunOTIAfterNTI() {
-    return this.runOTIAfterNTI;
-  }
-
-  public void setRunOTIAfterNTI(boolean enable) {
-    this.runOTIAfterNTI = enable;
   }
 
   // Not dead code; used by the open-source users of the compiler.
@@ -2292,11 +2284,6 @@ public class CompilerOptions {
     this.closurePass = closurePass;
   }
 
-  @Deprecated
-  public void setPreserveGoogRequires(boolean preserveGoogProvidesAndRequires) {
-    setPreserveGoogProvidesAndRequires(preserveGoogProvidesAndRequires);
-  }
-
   public void setPreserveGoogProvidesAndRequires(boolean preserveGoogProvidesAndRequires) {
     this.preserveGoogProvidesAndRequires = preserveGoogProvidesAndRequires;
   }
@@ -2537,6 +2524,16 @@ public class CompilerOptions {
     this.instrumentForCoverage = instrumentForCoverage;
   }
 
+  /** Set whether to instrument to collect branch coverage */
+  public void setInstrumentBranchCoverage(boolean instrumentBranchCoverage) {
+    if (instrumentForCoverage || !instrumentBranchCoverage) {
+      this.instrumentBranchCoverage = instrumentBranchCoverage;
+    } else {
+      throw new RuntimeException("The option instrumentForCoverage must be set to true for "
+          + "instrumentBranchCoverage to be set to true.");
+    }
+  }
+
   public List<ConformanceConfig> getConformanceConfigs() {
     return conformanceConfigs;
   }
@@ -2652,6 +2649,7 @@ public class CompilerOptions {
             .add("instrumentationTemplateFile", instrumentationTemplateFile)
             .add("instrumentationTemplate", instrumentationTemplate)
             .add("instrumentForCoverage", instrumentForCoverage)
+            .add("instrumentBranchCoverage", instrumentBranchCoverage)
             .add("j2clPassMode", j2clPassMode)
             .add("jqueryPass", jqueryPass)
             .add("labelRenaming", labelRenaming)
@@ -2699,6 +2697,7 @@ public class CompilerOptions {
             .add("quoteKeywordProperties", quoteKeywordProperties)
             .add("recordFunctionInformation", recordFunctionInformation)
             .add("removeAbstractMethods", removeAbstractMethods)
+            .add("removeSuperMethods", removeSuperMethods)
             .add("removeClosureAsserts", removeClosureAsserts)
             .add("removeDeadCode", removeDeadCode)
             .add("removeUnusedClassProperties", removeUnusedClassProperties)
@@ -3101,6 +3100,10 @@ public class CompilerOptions {
 
     boolean shouldAddJ2clPasses() {
       return this == TRUE || this == ON || this == AUTO;
+    }
+
+    boolean isExplicitlyOn() {
+      return this == TRUE || this == ON;
     }
   }
 }

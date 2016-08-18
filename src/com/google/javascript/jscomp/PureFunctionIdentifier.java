@@ -25,7 +25,7 @@ import com.google.common.io.Files;
 import com.google.javascript.jscomp.CodingConvention.Cache;
 import com.google.javascript.jscomp.DefinitionsRemover.Definition;
 import com.google.javascript.jscomp.NodeTraversal.ScopedCallback;
-import com.google.javascript.jscomp.graph.DiGraph;
+import com.google.javascript.jscomp.graph.DiGraph.DiGraphNode;
 import com.google.javascript.jscomp.graph.FixedPointGraphTraversal;
 import com.google.javascript.jscomp.graph.FixedPointGraphTraversal.EdgeCallback;
 import com.google.javascript.jscomp.graph.LinkedDirectedGraph;
@@ -35,6 +35,7 @@ import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.jstype.FunctionType;
 import com.google.javascript.rhino.jstype.JSType;
 import com.google.javascript.rhino.jstype.JSTypeNative;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -73,8 +74,7 @@ class PureFunctionIdentifier implements CompilerPass {
   private Node externs;
   private Node root;
 
-  public PureFunctionIdentifier(AbstractCompiler compiler,
-                                DefinitionProvider definitionProvider) {
+  public PureFunctionIdentifier(AbstractCompiler compiler, DefinitionProvider definitionProvider) {
     this.compiler = compiler;
     this.definitionProvider = definitionProvider;
     this.functionSideEffectMap = new HashMap<>();
@@ -174,7 +174,7 @@ class PureFunctionIdentifier implements CompilerPass {
    * @param name Query node
    * @return non-empty definition list or null
    */
-  private static Collection<Definition> getCallableDefinitions(
+  private Collection<Definition> getCallableDefinitions(
       DefinitionProvider definitionProvider, Node name) {
     if (name.isGetProp() || name.isName()) {
       List<Definition> result = new ArrayList<>();
@@ -187,7 +187,7 @@ class PureFunctionIdentifier implements CompilerPass {
 
       for (Definition current : decls) {
         Node rValue = current.getRValue();
-        if ((rValue != null) && rValue.isFunction()) {
+        if (rValue != null && isSupportedFunctionDefinition(rValue)) {
           result.add(current);
         } else {
           return null;
@@ -203,10 +203,8 @@ class PureFunctionIdentifier implements CompilerPass {
         firstVal = name.getFirstChild();
       }
 
-      Collection<Definition> defs1 = getCallableDefinitions(definitionProvider,
-                                                            firstVal);
-      Collection<Definition> defs2 = getCallableDefinitions(definitionProvider,
-                                                            firstVal.getNext());
+      Collection<Definition> defs1 = getCallableDefinitions(definitionProvider, firstVal);
+      Collection<Definition> defs2 = getCallableDefinitions(definitionProvider, firstVal.getNext());
       if (defs1 != null && defs2 != null) {
         defs1.addAll(defs2);
         return defs1;
@@ -224,10 +222,21 @@ class PureFunctionIdentifier implements CompilerPass {
       // child of a call and thus the function expression
       // definition will never be an extern.
       return ImmutableList.of(
-          (Definition)
-              new DefinitionsRemover.FunctionExpressionDefinition(name, false));
+          (Definition) new DefinitionsRemover.FunctionExpressionDefinition(name, false));
     } else {
       return null;
+    }
+  }
+
+  boolean isSupportedFunctionDefinition(Node n) {
+    switch (n.getToken()) {
+      case FUNCTION:
+        return true;
+      case HOOK:
+        return isSupportedFunctionDefinition(n.getSecondChild())
+            && isSupportedFunctionDefinition(n.getLastChild());
+      default:
+        return false;
     }
   }
 
@@ -239,12 +248,12 @@ class PureFunctionIdentifier implements CompilerPass {
    */
   private void propagateSideEffects() {
     // Nodes are function declarations; Edges are function call sites.
-    DiGraph<FunctionInformation, Node> sideEffectGraph =
+    LinkedDirectedGraph<FunctionInformation, Node> sideEffectGraph =
         LinkedDirectedGraph.createWithoutAnnotations();
 
     // create graph nodes
     for (FunctionInformation functionInfo : functionSideEffectMap.values()) {
-      sideEffectGraph.createNode(functionInfo);
+      functionInfo.graphNode = sideEffectGraph.createNode(functionInfo);
     }
 
     // add connections to called functions and side effect root.
@@ -272,9 +281,7 @@ class PureFunctionIdentifier implements CompilerPass {
 
         for (Definition def : defs) {
           Node defValue = def.getRValue();
-          FunctionInformation dep = functionSideEffectMap.get(defValue);
-          Preconditions.checkNotNull(dep);
-          sideEffectGraph.connect(dep, callSite, functionInfo);
+          connectDefs(sideEffectGraph, defValue, callSite, functionInfo.graphNode);
         }
       }
     }
@@ -288,6 +295,24 @@ class PureFunctionIdentifier implements CompilerPass {
       if (functionInfo.mayBePure()) {
         functionInfo.setIsPure();
       }
+    }
+  }
+
+  private void connectDefs(
+      LinkedDirectedGraph<FunctionInformation, Node> sideEffectGraph, Node def, Node callSite,
+      DiGraphNode<FunctionInformation, Node> graphNode) {
+    switch(def.getToken()) {
+      case FUNCTION:
+        FunctionInformation info = functionSideEffectMap.get(def);
+        Preconditions.checkNotNull(info);
+        sideEffectGraph.connect(info.graphNode, callSite, graphNode);
+        break;
+      case HOOK:
+        connectDefs(sideEffectGraph, def.getSecondChild(), callSite, graphNode);
+        connectDefs(sideEffectGraph, def.getLastChild(), callSite, graphNode);
+        break;
+      default:
+        throw new IllegalStateException("Unexpect definition node " + def);
     }
   }
 
@@ -310,36 +335,7 @@ class PureFunctionIdentifier implements CompilerPass {
       } else {
         flags.clearAllFlags();
         for (Definition def : defs) {
-          FunctionInformation functionInfo =
-              functionSideEffectMap.get(def.getRValue());
-          Preconditions.checkNotNull(functionInfo);
-          if (functionInfo.mutatesGlobalState()) {
-            flags.setMutatesGlobalState();
-          }
-
-          if (functionInfo.mutatesArguments()) {
-            flags.setMutatesArguments();
-          }
-
-          if (functionInfo.functionThrows()) {
-            flags.setThrows();
-          }
-
-          if (!callNode.isNew()) {
-            if (functionInfo.taintsThis()) {
-              // A FunctionInfo for "f" maps to both "f()" and "f.call()" nodes.
-              if (isCallOrApply(callNode)) {
-                flags.setMutatesArguments();
-              } else {
-                flags.setMutatesThis();
-              }
-            }
-          }
-
-          if (functionInfo.taintsReturn()) {
-            flags.setReturnsTainted();
-          }
-
+          updateFlagsForDefs(callNode, def.getRValue(), flags);
           if (flags.areAllFlagsSet()) {
             break;
           }
@@ -360,6 +356,52 @@ class PureFunctionIdentifier implements CompilerPass {
       }
 
       callNode.setSideEffectFlags(flags.valueOf());
+    }
+  }
+
+  private void updateFlagsForDefs(Node callNode, Node defNode, Node.SideEffectFlags flags) {
+    switch(defNode.getToken()) {
+      case FUNCTION:
+        updateFlagsForDef(callNode, defNode, flags);
+        break;
+      case HOOK:
+        updateFlagsForDefs(callNode, defNode.getSecondChild(), flags);
+        updateFlagsForDefs(callNode, defNode.getLastChild(), flags);
+        break;
+      default:
+        throw new IllegalStateException("Unexpect definition node " + defNode);
+    }
+  }
+
+  private void updateFlagsForDef(Node callNode, Node defNode, Node.SideEffectFlags flags) {
+    FunctionInformation functionInfo =
+        functionSideEffectMap.get(defNode);
+    Preconditions.checkNotNull(functionInfo);
+    if (functionInfo.mutatesGlobalState()) {
+      flags.setMutatesGlobalState();
+    }
+
+    if (functionInfo.mutatesArguments()) {
+      flags.setMutatesArguments();
+    }
+
+    if (functionInfo.functionThrows()) {
+      flags.setThrows();
+    }
+
+    if (!callNode.isNew()) {
+      if (functionInfo.taintsThis()) {
+        // A FunctionInfo for "f" maps to both "f()" and "f.call()" nodes.
+        if (isCallOrApply(callNode)) {
+          flags.setMutatesArguments();
+        } else {
+          flags.setMutatesThis();
+        }
+      }
+    }
+
+    if (functionInfo.taintsReturn()) {
+      flags.setReturnsTainted();
     }
   }
 
@@ -415,7 +457,7 @@ class PureFunctionIdentifier implements CompilerPass {
         return;
       }
 
-      if (!NodeUtil.nodeTypeMayHaveSideEffects(node) && !node.isReturn()) {
+      if (!NodeUtil.nodeTypeMayHaveSideEffects(node, compiler) && !node.isReturn()) {
         return;
       }
 
@@ -455,7 +497,7 @@ class PureFunctionIdentifier implements CompilerPass {
           sideEffectInfo.setTaintsReturn();
         }
       } else {
-        throw new IllegalArgumentException("Unhandled side effect node type " + node.getType());
+        throw new IllegalArgumentException("Unhandled side effect node type " + node.getToken());
       }
     }
 
@@ -477,7 +519,7 @@ class PureFunctionIdentifier implements CompilerPass {
 
       // Handle deferred local variable modifications:
       FunctionInformation sideEffectInfo = functionSideEffectMap.get(function);
-      Preconditions.checkNotNull(sideEffectInfo, function + "had no side effect info.");
+      Preconditions.checkNotNull(sideEffectInfo, "%s has no side effect info.", function);
 
       if (sideEffectInfo.mutatesGlobalState()){
         sideEffectInfo.resetLocalVars();
@@ -677,7 +719,7 @@ class PureFunctionIdentifier implements CompilerPass {
   }
 
   private static boolean isIncDec(Node n) {
-    Token type = n.getType();
+    Token type = n.getToken();
     return (type == Token.INC || type == Token.DEC);
   }
 
@@ -691,7 +733,7 @@ class PureFunctionIdentifier implements CompilerPass {
         new Predicate<Node>() {
           @Override
           public boolean apply(Node value) {
-            switch (value.getType()) {
+            switch (value.getToken()) {
               case ASSIGN:
                 // The assignment might cause an alias, look at the LHS.
                 return false;
@@ -810,6 +852,7 @@ class PureFunctionIdentifier implements CompilerPass {
    * list of calls that appear in a function's body.
    */
   private static class FunctionInformation {
+    private DiGraphNode<FunctionInformation, Node> graphNode;
     private List<Node> callsInFunctionBody = null;
     private Set<Var> blacklisted = null;
     private Set<Var> taintedLocals = null;
@@ -1087,7 +1130,7 @@ class PureFunctionIdentifier implements CompilerPass {
 
     @Override
     public void process(Node externs, Node root) {
-      NameBasedDefinitionProvider defFinder = new NameBasedDefinitionProvider(compiler);
+      NameBasedDefinitionProvider defFinder = new NameBasedDefinitionProvider(compiler, true);
       defFinder.process(externs, root);
 
       PureFunctionIdentifier pureFunctionIdentifier =

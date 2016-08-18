@@ -21,8 +21,8 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 import com.google.common.primitives.Ints;
+import com.google.javascript.jscomp.newtypes.ObjectsBuilder.ResolveConflictsBy;
 import com.google.javascript.rhino.Node;
-
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -820,7 +820,7 @@ final class ObjectType implements TypeWithProperties {
     } else if (this.fn == null) {
       return isLoose;
     }
-    return fn.isLooseSubtypeOf(other.fn, subSuperMap);
+    return fn.isLooseSubtypeOf(other.fn);
   }
 
   ObjectType specialize(ObjectType other) {
@@ -948,13 +948,14 @@ final class ObjectType implements TypeWithProperties {
     return new ObjectType(resultNomType, props, fn, resultNs, isLoose, ok);
   }
 
-  private static ObjectType join(ObjectType obj1, ObjectType obj2) {
+  static ObjectType join(ObjectType obj1, ObjectType obj2) {
     if (obj1 == TOP_OBJECT || obj2 == TOP_OBJECT) {
       return TOP_OBJECT;
     }
     NominalType nom1 = obj1.nominalType;
     NominalType nom2 = obj2.nominalType;
-    Preconditions.checkState(areRelatedNominalTypes(nom1, nom2));
+    Preconditions.checkState(nom1 == null || nom2 == null
+        || nom1.isRawSubtypeOf(nom2) || nom2.isRawSubtypeOf(nom1));
 
     if (obj1.equals(obj2)) {
       return obj1;
@@ -987,7 +988,7 @@ final class ObjectType implements TypeWithProperties {
     }
     ObjectType[] objs1Arr = objs1.toArray(new ObjectType[0]);
     ObjectType[] keptFrom1 = Arrays.copyOf(objs1Arr, objs1Arr.length);
-    ImmutableSet.Builder<ObjectType> newObjs = ImmutableSet.builder();
+    ObjectsBuilder newObjs = new ObjectsBuilder(ResolveConflictsBy.JOIN);
     for (ObjectType obj2 : objs2) {
       boolean addedObj2 = false;
       for (int i = 0; i < objs1Arr.length; i++) {
@@ -1041,7 +1042,7 @@ final class ObjectType implements TypeWithProperties {
   static ImmutableSet<ObjectType> meetSetsHelper(
       boolean specializeObjs1,
       Set<ObjectType> objs1, Set<ObjectType> objs2) {
-    ImmutableSet.Builder<ObjectType> newObjs = ImmutableSet.builder();
+    ObjectsBuilder newObjs = new ObjectsBuilder(ResolveConflictsBy.MEET);
     for (ObjectType obj2 : objs2) {
       for (ObjectType obj1 : objs1) {
         if (areRelatedNominalTypes(obj1.nominalType, obj2.nominalType)) {
@@ -1102,10 +1103,6 @@ final class ObjectType implements TypeWithProperties {
   }
 
   private Property getLeftmostProp(QualifiedName qname) {
-    return getLeftmostPropHelper(qname, false);
-  }
-
-  private Property getLeftmostPropHelper(QualifiedName qname, boolean ownProp) {
     String pname = qname.getLeftmostName();
     Property p = props.get(pname);
     if (p != null) {
@@ -1118,12 +1115,35 @@ final class ObjectType implements TypeWithProperties {
       }
     }
     if (this.nominalType != null) {
-      return ownProp
-          ? this.nominalType.getOwnProp(pname)
-          : this.nominalType.getProp(pname);
+      return this.nominalType.getProp(pname);
     }
-    if (!ownProp && builtinObject != null) {
+    if (builtinObject != null) {
       return builtinObject.getProp(pname);
+    }
+    return null;
+  }
+
+  // NOTE(aravindpg): This method is currently only used to obtain the defsite of an own prop, and
+  // deliberately does not return the more specialized version of a property if it is already
+  // present on the nominal type. This may be unsuitable from a typing point of view. Revisit if
+  // needed.
+  private Property getLeftmostOwnProp(QualifiedName qname) {
+    String pname = qname.getLeftmostName();
+    Property p = props.get(pname);
+    // Only return the extra/specialized prop p if we know that we don't have this property
+    // on our nominal type.
+    if (p != null
+        && (this.nominalType == null || !this.nominalType.mayHaveProp(pname))) {
+      return p;
+    }
+    if (this.ns != null) {
+      p = this.ns.getNsProp(pname);
+      if (p != null) {
+        return p;
+      }
+    }
+    if (this.nominalType != null) {
+      return this.nominalType.getOwnProp(pname);
     }
     return null;
   }
@@ -1137,7 +1157,8 @@ final class ObjectType implements TypeWithProperties {
   }
 
   Node getPropertyDefSiteHelper(String propertyName, boolean ownProp) {
-    Property p = getLeftmostPropHelper(new QualifiedName(propertyName), ownProp);
+    QualifiedName qname = new QualifiedName(propertyName);
+    Property p = ownProp ? getLeftmostOwnProp(qname) : getLeftmostProp(qname);
     // Try getters and setters specially.
     if (p == null) {
       p = getLeftmostProp(new QualifiedName(JSType.createGetterPropName(propertyName)));
@@ -1309,6 +1330,14 @@ final class ObjectType implements TypeWithProperties {
         this.ns,
         newFn != null && newFn.isQmarkFunction() || isLoose,
         this.objectKind);
+  }
+
+  boolean isPropDefinedOnSubtype(QualifiedName pname) {
+    Preconditions.checkArgument(pname.isIdentifier());
+    NominalType nt = getNominalType();
+    // If this type represents an object literal, return false.
+    // NewTypeInference handles the "Object" case.
+    return nt.isBuiltinObject() ? false : nt.isPropDefinedOnSubtype(pname);
   }
 
   @Override

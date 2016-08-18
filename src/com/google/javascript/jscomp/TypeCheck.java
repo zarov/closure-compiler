@@ -33,7 +33,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.javascript.jscomp.CodingConvention.SubclassRelationship;
 import com.google.javascript.jscomp.CodingConvention.SubclassType;
-import com.google.javascript.jscomp.TypeValidator.SubtypingMode;
 import com.google.javascript.jscomp.type.ReverseAbstractInterpreter;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSTypeExpression;
@@ -42,6 +41,7 @@ import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.jstype.EnumType;
 import com.google.javascript.rhino.jstype.FunctionType;
 import com.google.javascript.rhino.jstype.JSType;
+import com.google.javascript.rhino.jstype.JSType.SubtypingMode;
 import com.google.javascript.rhino.jstype.JSTypeNative;
 import com.google.javascript.rhino.jstype.JSTypeRegistry;
 import com.google.javascript.rhino.jstype.NamedType;
@@ -165,10 +165,12 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
           "JSC_CONFLICTING_EXTENDED_TYPE",
           "{1} cannot extend this type; {0}s can only extend {0}s");
 
-  static final DiagnosticType INTERFACE_EXTENDS_LOOP =
+  static final DiagnosticType ES5_CLASS_EXTENDING_ES6_CLASS =
       DiagnosticType.warning(
-          "JSC_INTERFACE_EXTENDS_LOOP",
-          "extends loop involving {0}, loop: {1}");
+          "JSC_ES5_CLASS_EXTENDING_ES6_CLASS", "ES5 class {0} cannot extend ES6 class {1}");
+
+  static final DiagnosticType INTERFACE_EXTENDS_LOOP =
+      DiagnosticType.warning("JSC_INTERFACE_EXTENDS_LOOP", "extends loop involving {0}, loop: {1}");
 
   static final DiagnosticType CONFLICTING_IMPLEMENTED_TYPE =
     DiagnosticType.warning(
@@ -324,6 +326,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
 
   private final CheckLevel reportMissingOverride;
   private final boolean reportUnknownTypes;
+  private SubtypingMode subtypingMode = SubtypingMode.NORMAL;
 
   // This may be expensive, so don't emit these warnings if they're
   // explicitly turned off.
@@ -452,12 +455,13 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
     if (n.isScript()) {
       String filename = n.getSourceFileName();
       if (filename != null && filename.endsWith(".java.js")) {
-        this.validator.setSubtypingMode(SubtypingMode.IGNORE_NULL_UNDEFINED);
+        this.subtypingMode = SubtypingMode.IGNORE_NULL_UNDEFINED;
       } else {
-        this.validator.setSubtypingMode(SubtypingMode.NORMAL);
+        this.subtypingMode = SubtypingMode.NORMAL;
       }
+      this.validator.setSubtypingMode(this.subtypingMode);
     }
-    switch (n.getType()) {
+    switch (n.getToken()) {
       case FUNCTION:
         // normal type checking
         final TypedScope outerScope = t.getTypedScope();
@@ -500,7 +504,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
     // To be explicitly set to false if the node is not typeable.
     boolean typeable = true;
 
-    switch (n.getType()) {
+    switch (n.getToken()) {
       case CAST:
         Node expr = n.getFirstChild();
         JSType exprType = getJSType(expr);
@@ -604,7 +608,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
       case BITNOT:
         childType = getJSType(n.getFirstChild());
         if (!childType.matchesInt32Context()) {
-          report(t, n, BIT_OPERATION, NodeUtil.opToStr(n.getType()), childType.toString());
+          report(t, n, BIT_OPERATION, NodeUtil.opToStr(n.getToken()), childType.toString());
         }
         ensureTyped(t, n, NUMBER_TYPE);
         break;
@@ -647,7 +651,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
         JSType rightTypeRestricted = rightType.restrictByNotNullOrUndefined();
 
         TernaryValue result = TernaryValue.UNKNOWN;
-        if (n.getType() == Token.EQ || n.getType() == Token.NE) {
+          if (n.getToken() == Token.EQ || n.getToken() == Token.NE) {
           result = leftTypeRestricted.testForEquality(rightTypeRestricted);
           if (n.isNE()) {
             result = result.not();
@@ -655,7 +659,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
         } else {
           // SHEQ or SHNE
           if (!leftTypeRestricted.canTestForShallowEqualityWith(rightTypeRestricted)) {
-            result = n.getType() == Token.SHEQ ? TernaryValue.FALSE : TernaryValue.TRUE;
+              result = n.getToken() == Token.SHEQ ? TernaryValue.FALSE : TernaryValue.TRUE;
           }
         }
 
@@ -750,7 +754,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
       case SUB:
       case ADD:
       case MUL:
-        visitBinaryOperator(n.getType(), t, n);
+        visitBinaryOperator(n.getToken(), t, n);
         break;
 
       case TRUE:
@@ -841,7 +845,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
         break;
 
       default:
-        report(t, n, UNEXPECTED_TOKEN, n.getType().toString());
+        report(t, n, UNEXPECTED_TOKEN, n.getToken().toString());
         ensureTyped(t, n);
         break;
     }
@@ -1258,7 +1262,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
             new TemplateTypeMapReplacer(typeRegistry, ctorTypeMap));
       }
 
-      if (!propertyType.isSubtype(superClassPropType)) {
+      if (!propertyType.isSubtype(superClassPropType, this.subtypingMode)) {
         compiler.report(
             t.makeError(n, HIDDEN_SUPERCLASS_PROPERTY_MISMATCH,
                 propertyName, topInstanceType.toString(),
@@ -1270,7 +1274,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
         if (interfaceType.hasProperty(propertyName)) {
           JSType superPropertyType =
               interfaceType.getPropertyType(propertyName);
-          if (!propertyType.isSubtype(superPropertyType)) {
+          if (!propertyType.isSubtype(superPropertyType, this.subtypingMode)) {
             topInstanceType = interfaceType.getConstructor().
                 getTopMostDefiningType(propertyName);
             compiler.report(
@@ -1336,7 +1340,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
    */
   static JSType getObjectLitKeyTypeFromValueType(Node key, JSType valueType) {
     if (valueType != null) {
-      switch (key.getType()) {
+      switch (key.getToken()) {
         case GETTER_DEF:
           // GET must always return a function type.
           if (valueType.isFunctionType()) {
@@ -1418,7 +1422,7 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
     // variable declarations are ignored.
     // TODO(user): remove this short-circuiting in favor of a
     // pre order traversal of the FUNCTION, CATCH, LP and VAR nodes.
-    Token parentNodeType = parent.getType();
+    Token parentNodeType = parent.getToken();
     if (parentNodeType == Token.FUNCTION ||
         parentNodeType == Token.CATCH ||
         parentNodeType == Token.PARAM_LIST ||
@@ -1646,8 +1650,8 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
       if (oType != null) {
         JSType thisPropType = interfaceType.getPropertyType(name);
         JSType oPropType = oType.getPropertyType(name);
-        if (thisPropType.isSubtype(oPropType)
-            || oPropType.isSubtype(thisPropType)
+        if (thisPropType.isSubtype(oPropType, this.subtypingMode)
+            || oPropType.isSubtype(thisPropType, this.subtypingMode)
             || thisPropType.isFunctionType() && oPropType.isFunctionType()
                && thisPropType.toMaybeFunctionType().hasEqualCallType(
                   oPropType.toMaybeFunctionType())) {
@@ -1684,6 +1688,18 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
             t.makeError(n, CONFLICTING_EXTENDED_TYPE,
                         "constructor", functionPrivateName));
       } else {
+        if (baseConstructor != null
+            && baseConstructor.getSource() != null
+            && baseConstructor.getSource().getBooleanProp(Node.IS_ES6_CLASS)
+            && !functionType.getSource().getBooleanProp(Node.IS_ES6_CLASS)) {
+          compiler.report(
+              t.makeError(
+                  n,
+                  ES5_CLASS_EXTENDING_ES6_CLASS,
+                  functionType.getDisplayName(),
+                  baseConstructor.getDisplayName()));
+        }
+
         // All interfaces are properly implemented by a class
         for (JSType baseInterface : functionType.getImplementedInterfaces()) {
           boolean badImplementedType = false;
@@ -1931,12 +1947,10 @@ public final class TypeCheck implements NodeTraversal.Callback, CompilerPass {
       case ASSIGN_URSH:
       case URSH:
         if (!leftType.matchesInt32Context()) {
-          report(t, left, BIT_OPERATION,
-                   NodeUtil.opToStr(n.getType()), leftType.toString());
+          report(t, left, BIT_OPERATION, NodeUtil.opToStr(n.getToken()), leftType.toString());
         }
         if (!rightType.matchesUint32Context()) {
-          report(t, right, BIT_OPERATION,
-                   NodeUtil.opToStr(n.getType()), rightType.toString());
+          report(t, right, BIT_OPERATION, NodeUtil.opToStr(n.getToken()), rightType.toString());
         }
         break;
 

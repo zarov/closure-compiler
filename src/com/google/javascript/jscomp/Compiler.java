@@ -46,7 +46,6 @@ import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.TypeIRegistry;
 import com.google.javascript.rhino.jstype.JSTypeRegistry;
-
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -212,8 +211,13 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
   // Used by optimize-returns, optimize-parameters and remove-unused-variables
   private DefinitionUseSiteFinder defFinder = null;
 
+  // Types that have been forward declared
+  private final Set<String> forwardDeclaredTypes = new HashSet<>();
+
   // For use by the new type inference
   private GlobalTypeInfo symbolTable;
+
+  private MostRecentTypechecker mostRecentTypechecker = MostRecentTypechecker.NONE;
 
   // This error reporter gets the messages from the current Rhino parser or TypeRegistry.
   private final ErrorReporter oldErrorReporter =
@@ -369,7 +373,7 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
     // With NTI, we still need OTI to run because the later passes that use
     // types only understand OTI types at the moment.
     // But we do not want to see the warnings from OTI.
-    if (options.getNewTypeInference() && options.getRunOTIAfterNTI()) {
+    if (options.getNewTypeInference()) {
       options.checkTypes = true;
       // Supress warnings from the const checks of CheckAccessControls so as to avoid
       // duplication.
@@ -731,10 +735,11 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
     if (options.skipNonTranspilationPasses) {
       // i.e. whitespace-only mode, which will not work with goog.module without:
       whitespaceOnlyPasses();
-    }
-
-    if (!options.skipNonTranspilationPasses || options.lowerFromEs6()) {
-      check();
+      if (options.lowerFromEs6()) {
+        transpileAndDontCheck();
+      }
+    } else {
+      check(); // check() also includes transpilation
       if (hasErrors()) {
         return;
       }
@@ -811,6 +816,17 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
       }
     } finally {
       stopTracer(t, "runWhitespaceOnlyPasses");
+    }
+  }
+
+  public void transpileAndDontCheck() {
+    Tracer t = newTracer("runTranspileOnlyPasses");
+    try {
+      for (PassFactory pf : getPassConfig().getTranspileOnlyPasses()) {
+        pf.create(this).process(externsRoot, jsRoot);
+      }
+    } finally {
+      stopTracer(t, "runTranspileOnlyPasses");
     }
   }
 
@@ -982,10 +998,18 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
    */
   public Result getResult() {
     PassConfig.State state = getPassConfig().getIntermediateState();
+    Set<SourceFile> transpiledFiles = new HashSet<>();
+    if (jsRoot != null) {
+      for (Node scriptNode : jsRoot.children()) {
+        if (scriptNode.getBooleanProp(Node.TRANSPILED)) {
+          transpiledFiles.add(getSourceFileByName(scriptNode.getSourceFileName()));
+        }
+      }
+    }
     return new Result(getErrors(), getWarnings(), debugLog.toString(),
         state.variableMap, state.propertyMap,
         state.anonymousFunctionNameMap, state.stringMap, functionInformationMap,
-        sourceMap, externExports, state.cssNames, state.idGeneratorMap);
+        sourceMap, externExports, state.cssNames, state.idGeneratorMap, transpiledFiles);
   }
 
   /**
@@ -1087,7 +1111,7 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
     externs.remove(input);
     Node root = input.getAstRoot(this);
     if (root != null) {
-      root.detachFromParent();
+      root.detach();
     }
   }
 
@@ -1216,30 +1240,39 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
 
   @Override
   public TypeIRegistry getTypeIRegistry() {
-    if (options.getNewTypeInference() && !options.getRunOTIAfterNTI()) {
-      return getSymbolTable();
-    } else {
-      return getTypeRegistry();
+    switch (mostRecentTypechecker) {
+      case NONE:
+        // Even in compiles where typechecking is not enabled, some passes ask for the
+        // type registry, eg, GatherExternProperties does. Also, in CheckAccessControls,
+        // the constructor asks for a type registry, and this may happen before type checking
+        // runs. So, in the NONE case, if NTI is enabled, return a new registry, since NTI is
+        // the relevant type checker. If NTI is not enabled, return an old registry.
+        return options.getNewTypeInference() ? getSymbolTable() : getTypeRegistry();
+      case OTI:
+        return getTypeRegistry();
+      case NTI:
+        return getSymbolTable();
+      default:
+        throw new RuntimeException("Unhandled typechecker " + mostRecentTypechecker);
     }
   }
 
   @Override
   public JSTypeRegistry getTypeRegistry() {
     if (typeRegistry == null) {
-      typeRegistry = new JSTypeRegistry(oldErrorReporter);
+      typeRegistry = new JSTypeRegistry(oldErrorReporter, forwardDeclaredTypes);
     }
     return typeRegistry;
   }
 
   @Override
   void forwardDeclareType(String typeName) {
-    // Always add it to the old type registry, since OTI runs after NTI to
-    // provide types for the remaining passes.
-    // TODO(dimvar): change this when we stop running OTI after NTI.
-    getTypeRegistry().forwardDeclareType(typeName);
-    if (this.options.getNewTypeInference()) {
-      getSymbolTable().addUnknownTypeName(typeName);
-    }
+    forwardDeclaredTypes.add(typeName);
+  }
+
+  @Override
+  void setMostRecentTypechecker(MostRecentTypechecker lastRun) {
+    this.mostRecentTypechecker = lastRun;
   }
 
   @Override
@@ -1336,16 +1369,9 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
   @Override
   GlobalTypeInfo getSymbolTable() {
     if (this.symbolTable == null) {
-      this.symbolTable = new GlobalTypeInfo(this);
+      this.symbolTable = new GlobalTypeInfo(this, forwardDeclaredTypes);
     }
     return this.symbolTable;
-  }
-
-  @Override
-  void setSymbolTable(CompilerPass symbolTable) {
-    Preconditions.checkArgument(
-        symbolTable == null || symbolTable instanceof GlobalTypeInfo);
-    this.symbolTable = (GlobalTypeInfo) symbolTable;
   }
 
   @Override
@@ -1515,7 +1541,7 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
         // Forward-declare all the provided types, so that they
         // are not flagged even if they are dropped from the process.
         for (String provide : input.getProvides()) {
-          getTypeRegistry().forwardDeclareType(provide);
+          forwardDeclareType(provide);
         }
       }
 
@@ -2202,9 +2228,6 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
         ParserRunner.createConfig(
             mode,
             options.isParseJsDocDocumentation(),
-            options.preservesDetailedSourceInfo()
-                ? Config.SourceLocationInformation.PRESERVE
-                : Config.SourceLocationInformation.DISCARD,
             options.canContinueAfterErrors()
                 ? Config.RunMode.KEEP_GOING
                 : Config.RunMode.STOP_AFTER_ERROR,
@@ -2657,27 +2680,23 @@ public class Compiler extends AbstractCompiler implements ErrorHandler {
          node != null && node.isExprResult() && node.getFirstChild().isString();
          node = ast.getFirstChild()) {
       String directive = node.getFirstChild().getString();
-      List<String> words = Splitter.on(' ').splitToList(directive);
+      List<String> words = Splitter.on(' ').limit(2).splitToList(directive);
       switch (words.get(0)) {
         case "use":
           // 'use strict' is ignored (and deleted).
           break;
         case "require":
-          // 'require lib1 lib2'; pulls in the named libraries before this one.
-          for (String dependency : words.subList(1, words.size())) {
-            ensureLibraryInjected(dependency, force);
-          }
+          // 'require lib'; pulls in the named library before this one.
+          ensureLibraryInjected(words.get(1), force);
           break;
         case "declare":
-          // 'declare name1 name2'; adds the names to the externs (with no type information).
+          // 'declare name'; adds the name to the externs (with no type information).
           // Note that we could simply add the entire externs library, but that leads to
           // potentially-surprising behavior when the externs that are present depend on
           // whether or not a polyfill is used.
-          for (String extern : words.subList(1, words.size())) {
-            getSynthesizedExternsInputAtEnd()
-                .getAstRoot(this)
-                .addChildToBack(IR.var(IR.name(extern)));
-          }
+          getSynthesizedExternsInputAtEnd()
+              .getAstRoot(this)
+              .addChildToBack(IR.var(IR.name(words.get(1))));
           break;
         default:
           throw new RuntimeException("Bad directive: " + directive);

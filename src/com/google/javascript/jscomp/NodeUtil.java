@@ -32,9 +32,12 @@ import com.google.javascript.rhino.StaticSourceFile;
 import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.TokenStream;
 import com.google.javascript.rhino.TokenUtil;
+import com.google.javascript.rhino.TypeI;
 import com.google.javascript.rhino.dtoa.DToA;
 import com.google.javascript.rhino.jstype.JSType;
+import com.google.javascript.rhino.jstype.JSTypeNative;
 import com.google.javascript.rhino.jstype.TernaryValue;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -43,6 +46,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
 import javax.annotation.Nullable;
 
 /**
@@ -690,6 +694,22 @@ public final class NodeUtil {
   }
 
   /**
+   * Returns true iff the value associated with the node is a JS string literal,
+   * or a concatenation thereof.
+   */
+  static boolean isStringLiteralValue(Node node) {
+    if (node.getType() == Token.STRING) {
+      return true;
+    } else if (node.getType() == Token.ADD) {
+      Preconditions.checkState(node.getChildCount() == 2);
+      Node left = node.getFirstChild();
+      Node right = node.getLastChild();
+      return isStringLiteralValue(left) && isStringLiteralValue(right);
+    }
+    return false;
+  }
+
+  /**
    * Determines whether the given value may be assigned to a define.
    *
    * @param val The value being assigned.
@@ -1255,32 +1275,32 @@ public final class NodeUtil {
       return false;
     }
 
-    Node nameNode = callNode.getFirstChild();
+    Node callee = callNode.getFirstChild();
 
     // Built-in functions with no side effects.
-    if (nameNode.isName()) {
-      String name = nameNode.getString();
+    if (callee.isName()) {
+      String name = callee.getString();
       if (BUILTIN_FUNCTIONS_WITHOUT_SIDEEFFECTS.contains(name)) {
         return false;
       }
-    } else if (nameNode.isGetProp()) {
+    } else if (callee.isGetProp()) {
       if (callNode.hasOneChild()
           && OBJECT_METHODS_WITHOUT_SIDEEFFECTS.contains(
-                nameNode.getLastChild().getString())) {
+                callee.getLastChild().getString())) {
         return false;
       }
 
       if (callNode.isOnlyModifiesThisCall()
-          && evaluatesToLocalValue(nameNode.getFirstChild())) {
+          && evaluatesToLocalValue(callee.getFirstChild())) {
         return false;
       }
 
       // Many common Math functions have no side-effects.
       // TODO(nicksantos): This is a terrible terrible hack, until
       // I create a definitionProvider that understands namespacing.
-      if (nameNode.getFirstChild().isName() && nameNode.isQualifiedName()
-          && nameNode.getFirstChild().getString().equals("Math")) {
-        switch(nameNode.getLastChild().getString()) {
+      if (callee.getFirstChild().isName() && callee.isQualifiedName()
+          && callee.getFirstChild().getString().equals("Math")) {
+        switch(callee.getLastChild().getString()) {
           case "abs":
           case "acos":
           case "acosh":
@@ -1319,12 +1339,15 @@ public final class NodeUtil {
       }
 
       if (compiler != null && !compiler.hasRegExpGlobalReferences()) {
-        if (nameNode.getFirstChild().isRegExp()
-            && REGEXP_METHODS.contains(nameNode.getLastChild().getString())) {
+        if (callee.getFirstChild().isRegExp()
+            && REGEXP_METHODS.contains(callee.getLastChild().getString())) {
           return false;
-        } else if (nameNode.getFirstChild().isString()) {
-          String method = nameNode.getLastChild().getString();
-          Node param = nameNode.getNext();
+        } else if (isTypedAsString(callee.getFirstChild(), compiler)) {
+          // Unlike regexs, string methods don't need to be hosted on a string literal
+          // to avoid leaking mutating global state changes, it is just necessary that
+          // the regex object can't be referenced.
+          String method = callee.getLastChild().getString();
+          Node param = callee.getNext();
           if (param != null) {
             if (param.isString()) {
               if (STRING_REGEXP_METHODS.contains(method)) {
@@ -1344,6 +1367,25 @@ public final class NodeUtil {
     }
 
     return true;
+  }
+
+  private static boolean isTypedAsString(Node n, AbstractCompiler compiler) {
+    if (n.isString()) {
+      return true;
+    }
+
+    if (compiler.getOptions().useTypesForOptimization) {
+      TypeI type = n.getTypeI();
+      if (type != null) {
+        TypeI nativeStringType = compiler.getTypeIRegistry()
+            .getNativeType(JSTypeNative.STRING_TYPE);
+        if (type.isEquivalentTo(nativeStringType)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -2595,7 +2637,7 @@ public final class NodeUtil {
       // The CATCH can can only be removed if there is a finally clause.
       Node tryNode = node.getGrandparent();
       Preconditions.checkState(NodeUtil.hasFinally(tryNode));
-      node.detachFromParent();
+      node.detach();
     } else if (isTryCatchNodeContainer(node)) {
       // The container node itself can't be removed, but the contained CATCH
       // can if there is a 'finally' clause
@@ -2916,6 +2958,11 @@ public final class NodeUtil {
         || isLhsByDestructuring(n);
   }
 
+  static boolean isLhsOfAssign(Node n) {
+    Node parent = n.getParent();
+    return parent != null && parent.getType() == Token.ASSIGN && parent.getFirstChild() == n;
+  }
+
   public static boolean isImportedName(Node n) {
     Node parent = n.getParent();
     return parent.isImport()
@@ -3209,10 +3256,13 @@ public final class NodeUtil {
                      ? name.substring(startPos)
                      : name.substring(startPos, endPos));
       Node propNode = IR.string(part);
+      propNode.setLength(part.length());
       if (compiler.getCodingConvention().isConstantKey(part)) {
         propNode.putBooleanProp(Node.IS_CONSTANT_NAME, true);
       }
+      int length = node.getLength() + ".".length() + part.length();
       node = IR.getprop(node, propNode);
+      node.setLength(length);
     } while (endPos != -1);
 
     return node;
@@ -3294,6 +3344,7 @@ public final class NodeUtil {
    * @param basisNode The basis node from which to copy the source file info.
    * @param originalName The original name of the node.
    */
+  @Deprecated
   static void setDebugInformation(Node node, Node basisNode,
                                   String originalName) {
     node.copyInformationFromForTree(basisNode);
@@ -3302,6 +3353,7 @@ public final class NodeUtil {
 
   private static Node newName(AbstractCompiler compiler, String name) {
     Node nameNode = IR.name(name);
+    nameNode.setLength(name.length());
     if (compiler.getCodingConvention().isConstant(name)) {
       nameNode.putBooleanProp(Node.IS_CONSTANT_NAME, true);
     }
@@ -3652,7 +3704,7 @@ public final class NodeUtil {
   static Node newUndefinedNode(Node srcReferenceNode) {
     Node node = IR.voidNode(IR.number(0));
     if (srcReferenceNode != null) {
-        node.copyInformationFromForTree(srcReferenceNode);
+      node.useSourceInfoFromForTree(srcReferenceNode);
     }
     return node;
   }

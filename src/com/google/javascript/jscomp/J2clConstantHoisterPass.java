@@ -40,7 +40,7 @@ public class J2clConstantHoisterPass implements CompilerPass {
 
   @Override
   public void process(Node externs, Node root) {
-    if (J2clSourceFileChecker.shouldSkipExecution(compiler)) {
+    if (!J2clSourceFileChecker.shouldRunJ2clPasses(compiler)) {
       return;
     }
 
@@ -122,7 +122,7 @@ public class J2clConstantHoisterPass implements CompilerPass {
     NodeUtil.removeChild(clinitAssignment.getParent(), clinitAssignment);
 
     // Replace the assignment in declaration with the value from clinit
-    clinitAssignedValue.detachFromParent();
+    clinitAssignedValue.detach();
     declarationInClass.replaceChild(declarationAssignedValue, clinitAssignedValue);
     declarationInClass.putBooleanProp(Node.IS_CONSTANT_VAR, true);
 
