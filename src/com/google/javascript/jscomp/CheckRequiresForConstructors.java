@@ -29,13 +29,11 @@ import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
 import javax.annotation.Nullable;
 
 /**
@@ -44,25 +42,25 @@ import javax.annotation.Nullable;
  * warning for each discrepancy.
  *
  * <p>The rules on when a warning is reported are: <ul>
- * <li>Type is referenced in code -> goog.require is required
+ * <li>Type is referenced in code → goog.require is required
  *     (missingRequires check fails if it's not there)
- * <li>Type is referenced in an @extends or @implements -> goog.require is required
+ * <li>Type is referenced in an @extends or @implements → goog.require is required
  *     (missingRequires check fails if it's not there)
- * <li>Type is referenced in other JsDoc (@type etc) -> goog.require is optional
+ * <li>Type is referenced in other JsDoc (@type etc) → goog.require is optional
  *     (don't warn, regardless of if it is there)
- * <li>Type is not referenced at all -> goog.require is forbidden
+ * <li>Type is not referenced at all → goog.require is forbidden
  *     (extraRequires check fails if it is there)
  * </ul>
  *
  */
-class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal.Callback {
+public class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal.Callback {
   private final AbstractCompiler compiler;
   private final CodingConvention codingConvention;
 
   private static final Splitter DOT_SPLITTER = Splitter.on('.');
   private static final Joiner DOT_JOINER = Joiner.on('.');
 
-  public static enum Mode {
+  static enum Mode {
     // Looking at a single file. Only a minimal set of externs are present.
     SINGLE_FILE,
     // Used during a normal compilation. The entire program + externs are available.
@@ -71,6 +69,8 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
   private Mode mode;
 
   private final Set<String> providedNames = new HashSet<>();
+
+  // Keys are the local name of a required namespace. Values are the goog.require CALL node.
   private final Map<String, Node> requires = new HashMap<>();
 
   // Only used in single-file mode.
@@ -91,21 +91,16 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
   static final DiagnosticType MISSING_REQUIRE_WARNING =
       DiagnosticType.disabled(
           "JSC_MISSING_REQUIRE_WARNING", "missing require: ''{0}''");
-
   static final DiagnosticType MISSING_REQUIRE_FOR_GOOG_SCOPE =
       DiagnosticType.disabled(
           "JSC_MISSING_REQUIRE_FOR_GOOG_SCOPE", "missing require: ''{0}''");
 
-  static final DiagnosticType MISSING_REQUIRE_CALL_WARNING =
-      DiagnosticType.disabled(
-          "JSC_MISSING_REQUIRE_CALL_WARNING", "missing require: ''{0}''");
+  // TODO(tbreisacher): Remove this and just use MISSING_REQUIRE_WARNING.
+  static final DiagnosticType MISSING_REQUIRE_STRICT_WARNING =
+      DiagnosticType.disabled("JSC_MISSING_REQUIRE_STRICT_WARNING", "missing require: ''{0}''");
 
-  static final DiagnosticType EXTRA_REQUIRE_WARNING = DiagnosticType.disabled(
+  public static final DiagnosticType EXTRA_REQUIRE_WARNING = DiagnosticType.disabled(
       "JSC_EXTRA_REQUIRE_WARNING", "extra require: ''{0}''");
-
-  static final DiagnosticType DUPLICATE_REQUIRE_WARNING = DiagnosticType.disabled(
-      "JSC_DUPLICATE_REQUIRE_WARNING",
-      "''{0}'' required more than once.");
 
   private static final Set<String> DEFAULT_EXTRA_NAMESPACES = ImmutableSet.of(
       "goog.testing.asserts", "goog.testing.jsunit", "goog.testing.JsTdTestCaseAdapter");
@@ -116,12 +111,9 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
     this.codingConvention = compiler.getCodingConvention();
   }
 
-  /**
-   * Uses Collections of new and goog.require nodes to create a compiler warning
-   * for each new class name without a corresponding goog.require().
-   */
   @Override
   public void process(Node externs, Node root) {
+    reset();
     NodeTraversal.traverseRootsEs6(compiler, this, externs, root);
   }
 
@@ -130,6 +122,7 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
     // TODO(joeltine): Remove this and properly handle hot swap passes. See
     // b/28869281 for context.
     mode = Mode.SINGLE_FILE;
+    reset();
     NodeTraversal.traverseEs6(compiler, scriptRoot, this);
   }
 
@@ -212,14 +205,20 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
         }
         break;
       case NAME:
-        if (!NodeUtil.isLValue(n)) {
-          visitQualifiedName(n);
+        if (!NodeUtil.isLValue(n) && !parent.isGetProp()) {
+          visitQualifiedName(t, n, parent);
         }
         break;
       case GETPROP:
         // If parent is a GETPROP, they will handle the weak usages.
         if (!parent.isGetProp() && n.isQualifiedName()) {
-          visitQualifiedName(n);
+          visitQualifiedName(t, n, parent);
+        }
+        break;
+      case STRING_KEY:
+        if (parent.isObjectLit() && !n.hasChildren()) {
+          // Object literal shorthand. This is a usage of the name.
+          visitQualifiedName(t, n, parent);
         }
         break;
       case CALL:
@@ -248,6 +247,7 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
     this.weakUsages.clear();
     this.requires.clear();
     this.closurizedNamespaces.clear();
+    this.closurizedNamespaces.add("goog");
     this.providedNames.clear();
     this.googScopeBlock = null;
   }
@@ -320,12 +320,16 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
           if (node.isCall()) {
             String defaultName = parentNamespace != null ? parentNamespace : namespace;
             String nameToReport = Iterables.getFirst(classNames, defaultName);
-            compiler.report(t.makeError(node, MISSING_REQUIRE_CALL_WARNING, nameToReport));
+            compiler.report(t.makeError(node, MISSING_REQUIRE_STRICT_WARNING, nameToReport));
           } else if (node.getParent().isName()
               && node.getParent().getGrandparent() == googScopeBlock) {
             compiler.report(t.makeError(node, MISSING_REQUIRE_FOR_GOOG_SCOPE, namespace));
           } else {
-            compiler.report(t.makeError(node, MISSING_REQUIRE_WARNING, namespace));
+            if (node.isGetProp() && !node.getParent().isClass()) {
+              compiler.report(t.makeError(node, MISSING_REQUIRE_STRICT_WARNING, namespace));
+            } else {
+              compiler.report(t.makeError(node, MISSING_REQUIRE_WARNING, namespace));
+            }
           }
           namespaces.add(namespace);
         }
@@ -357,10 +361,6 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
     compiler.report(JSError.make(call, EXTRA_REQUIRE_WARNING, require));
   }
 
-  private void reportDuplicateRequireWarning(Node call, String require) {
-    compiler.report(JSError.make(call, DUPLICATE_REQUIRE_WARNING, require));
-  }
-
   /**
    * @param localName The name that should be used in this file.
    *
@@ -374,10 +374,13 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
    * </pre>
    */
   private void visitRequire(String localName, Node node) {
-    if (requires.containsKey(localName)) {
-      reportDuplicateRequireWarning(node, localName);
-    } else {
+    if (!requires.containsKey(localName)) {
       requires.put(localName, node);
+    }
+
+    // For goog.require('example.Outer.Inner'), add example.Outer as well.
+    for (String className : getClassNames(localName)) {
+      requires.put(className, node);
     }
   }
 
@@ -401,23 +404,27 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
     }
   }
 
+  private void visitGoogRequire(String namespace, Node googRequireCall, Node parent) {
+    maybeAddClosurizedNamespace(namespace);
+    if (parent.isName()) {
+      visitRequire(parent.getString(), googRequireCall);
+    } else if (parent.isDestructuringLhs() && parent.getFirstChild().isObjectPattern()) {
+      for (Node stringKey : parent.getFirstChild().children()) {
+        if (stringKey.hasChildren()) {
+          visitRequire(stringKey.getFirstChild().getString(), stringKey.getFirstChild());
+        } else {
+          visitRequire(stringKey.getString(), stringKey);
+        }
+      }
+    } else {
+      visitRequire(namespace, googRequireCall);
+    }
+  }
+
   private void visitCallNode(NodeTraversal t, Node call, Node parent) {
     String required = extractNamespaceIfRequire(call);
     if (required != null) {
-      maybeAddClosurizedNamespace(required);
-      if (parent.isName()) {
-        visitRequire(parent.getString(), call);
-      } else if (parent.isDestructuringLhs() && parent.getFirstChild().isObjectPattern()) {
-        for (Node stringKey : parent.getFirstChild().children()) {
-          if (stringKey.hasChildren()) {
-            visitRequire(stringKey.getFirstChild().getString(), call);
-          } else {
-            visitRequire(stringKey.getString(), call);
-          }
-        }
-      } else {
-        visitRequire(required, call);
-      }
+      visitGoogRequire(required, call, parent);
       return;
     }
     String provided = extractNamespaceIfProvide(call);
@@ -445,8 +452,25 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
       Node root = NodeUtil.getRootOfQualifiedName(callee);
       if (root.isName()) {
         Var var = t.getScope().getVar(root.getString());
-        if (var == null || (!var.isExtern() && !var.isLocal())) {
+        if (var == null || (!var.isExtern() && var.isGlobal())) {
           usages.put(callee.getQualifiedName(), call);
+        }
+      }
+    }
+  }
+
+  private void addUsageOfOutermostClassName(Node qname, NodeTraversal t) {
+    Node root = NodeUtil.getRootOfQualifiedName(qname);
+    if (!root.isName()) {
+      return;
+    }
+
+    for (Node n = root.getParent(); n.isGetProp(); n = n.getParent()) {
+      if (isClassName(n.getLastChild().getString())) {
+        Var var = t.getScope().getVar(root.getString());
+        if (var == null || (var.isGlobal() && !var.isExtern())) {
+          usages.put(n.getQualifiedName(), n);
+          return;
         }
       }
     }
@@ -463,31 +487,16 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
     weakUsages.add(qualifiedName);
   }
 
-  private void visitQualifiedName(Node getpropOrName) {
-    if (getpropOrName.isName() && getpropOrName.getString() != null) {
-      // If the referenced thing is a goog.require as desugared from goog.module().
-      if (getpropOrName.getBooleanProp(Node.GOOG_MODULE_REQUIRE)) {
-        Node declStatement = NodeUtil.getEnclosingStatement(getpropOrName);
-        if (NodeUtil.isNameDeclaration(declStatement)) {
-          for (Node varChild : declStatement.children()) {
-            // Normal declaration.
-            if (varChild.isName()) {
-              requires.put(varChild.getString(), getpropOrName);
-            }
-            // Object destructuring declaration.
-            if (varChild.isObjectPattern()) {
-              for (Node objectChild : varChild.children()) {
-                if (objectChild.isStringKey()) {
-                  requires.put(objectChild.getString(), getpropOrName);
-                }
-              }
-            }
-          }
-        }
-      }
+  private void visitQualifiedName(NodeTraversal t, Node n, Node parent) {
+    Preconditions.checkState(n.isName() || n.isGetProp() || n.isStringKey(), n);
+    String qualifiedName = n.isStringKey() ? n.getString() : n.getQualifiedName();
+    addWeakUsagesOfAllPrefixes(qualifiedName);
+    if (mode != Mode.SINGLE_FILE) {  // TODO(tbreisacher): Fix violations and remove this check.
+      return;
     }
-
-    addWeakUsagesOfAllPrefixes(getpropOrName.getQualifiedName());
+    if (!n.isStringKey() && !NodeUtil.isLhsOfAssign(n) && !parent.isExprResult()) {
+      addUsageOfOutermostClassName(n, t);
+    }
   }
 
   private void visitNewNode(NodeTraversal t, Node newNode) {
@@ -517,9 +526,7 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
     String name = root.getString();
     Var var = t.getScope().getVar(name);
     if (var != null
-        && (var.isExtern()
-            || var.getSourceFile() == newNode.getStaticSourceFile()
-            || ClosureRewriteModule.isModuleExport(name))) {
+        && (var.isExtern() || var.getSourceFile() == newNode.getStaticSourceFile())) {
       return;
     }
     usages.put(qNameNode.getQualifiedName(), newNode);
@@ -561,11 +568,12 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
     if (root.isName()) {
       String rootName = root.getString();
       Var var = t.getScope().getVar(rootName);
-      if (var != null
-          && (var.isLocal() || var.isExtern() || ClosureRewriteModule.isModuleExport(rootName))) {
+      if (var != null && (var.isLocal() || var.isExtern())) {
         // "require" not needed for these
       } else {
-        usages.put(extendClass.getQualifiedName(), extendClass);
+        List<String> classNames = getClassNames(extendClass.getQualifiedName());
+        String outermostClassName = Iterables.getFirst(classNames, extendClass.getQualifiedName());
+        usages.put(outermostClassName, extendClass);
       }
     }
   }
@@ -583,7 +591,7 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
    */
   private void maybeAddGoogScopeUsage(NodeTraversal t, Node n, Node parent) {
     Preconditions.checkState(NodeUtil.isNameDeclaration(n));
-    if (n.getChildCount() == 1 && parent == googScopeBlock) {
+    if (n.hasOneChild() && parent == googScopeBlock) {
       Node rhs = n.getFirstFirstChild();
       if (rhs != null && rhs.isQualifiedName()) {
         Node root = NodeUtil.getRootOfQualifiedName(rhs);
@@ -606,18 +614,18 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
    *      <li><pre>var foo = function() {};</pre>
    *      <li><pre>foo.bar = function() {};</pre>
    */
-  private boolean declaresFunction(Node n) {
-    if (n.isFunction()) {
+  private boolean declaresFunctionOrClass(Node n) {
+    if (n.isFunction() || n.isClass()) {
       return true;
     }
 
-    if (n.isAssign() && n.getLastChild().isFunction()) {
+    if (n.isAssign() && (n.getLastChild().isFunction() || n.getLastChild().isClass())) {
       return true;
     }
 
     if (NodeUtil.isNameDeclaration(n)
         && n.getFirstChild().hasChildren()
-        && n.getFirstFirstChild().isFunction()) {
+        && (n.getFirstFirstChild().isFunction() || n.getFirstFirstChild().isClass())) {
       return true;
     }
 
@@ -630,7 +638,7 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
       return;
     }
 
-    if (declaresFunction(n)) {
+    if (declaresFunctionOrClass(n)) {
       for (JSTypeExpression expr : info.getImplementedInterfaces()) {
         maybeAddUsage(t, n, expr);
       }
@@ -694,8 +702,7 @@ class CheckRequiresForConstructors implements HotSwapCompilerPass, NodeTraversal
               }
               String rootName = Splitter.on('.').split(typeString).iterator().next();
               Var var = t.getScope().getVar(rootName);
-              if ((var == null || !var.isExtern())
-                  && !ClosureRewriteModule.isModuleExport(rootName)) {
+              if (var == null || !var.isExtern()) {
                 if (markStrongUsages) {
                   usages.put(typeString, n);
                 } else {

@@ -23,6 +23,7 @@ import com.google.javascript.rhino.Node;
  * "path/foo.js.zip!path/bar.java.js".
  */
 final class J2clSourceFileChecker implements CompilerPass {
+
   private AbstractCompiler compiler;
   // The Annotation value type should be Boolean.
   static final String HAS_J2CL_ANNOTATION_KEY = "HAS_J2CL";
@@ -49,8 +50,8 @@ final class J2clSourceFileChecker implements CompilerPass {
   }
 
   /**
-   * Indicates whether it should run future J2CL passes with information from the compiler.
-   * For example, if the compiler's HAS_J2CL annotation is false, it should.
+   * Indicates whether it should run future J2CL passes with information from the compiler. For
+   * example, if the compiler's HAS_J2CL annotation is false, it should.
    */
   static boolean shouldRunJ2clPasses(AbstractCompiler compiler) {
     return compiler.getOptions().j2clPassMode.isExplicitlyOn()

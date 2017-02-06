@@ -141,8 +141,7 @@ public final class VarCheckTest extends Es6CompilerTestCase {
   }
 
   public void testMultiplyDeclaredVars4() {
-    testSame("x;", "var x = 1; var x = 2;",
-        VarCheck.VAR_MULTIPLY_DECLARED_ERROR, true);
+    testSame("x;", "var x = 1; var x = 2;", VAR_MULTIPLY_DECLARED_ERROR, true);
   }
 
   public void testMultiplyDeclaredLets() {
@@ -189,6 +188,11 @@ public final class VarCheckTest extends Es6CompilerTestCase {
 
   public void testVarDeclarationInExterns() {
     testSame("var asdf;", "asdf;", null);
+  }
+
+  public void testFunctionDeclarationInExterns() {
+    testSameEs6("function foo(x = 7) {}", "foo();", null);
+    testSameEs6("function foo(...rest) {}", "foo(1,2,3);", null);
   }
 
   public void testVarAssignmentInExterns() {

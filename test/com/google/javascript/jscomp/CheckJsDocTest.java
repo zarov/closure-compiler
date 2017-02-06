@@ -83,6 +83,18 @@ public final class CheckJsDocTest extends Es6CompilerTestCase {
         DISALLOWED_MEMBER_JSDOC);
   }
 
+  public void testMisplacedParamAnnotation() {
+    testWarningEs6(LINE_JOINER.join(
+        "/** @param {string} x */ var Foo = goog.defineClass(null, {",
+        "  constructor(x) {}",
+        "});"), MISPLACED_ANNOTATION);
+
+    testWarningEs6(LINE_JOINER.join(
+        "/** @param {string} x */ const Foo = class {",
+        "  constructor(x) {}",
+        "};"), MISPLACED_ANNOTATION);
+  }
+
   public void testAbstract_method() {
     testSameEs6("class Foo { /** @abstract */ doSomething() {}}");
     testSame(LINE_JOINER.join(
@@ -90,6 +102,13 @@ public final class CheckJsDocTest extends Es6CompilerTestCase {
         "var Foo = function() {};",
         "/** @abstract */",
         "Foo.prototype.something = function() {}"));
+  }
+
+  public void testAbstract_getter_setter() {
+    testSameEs6("class Foo { /** @abstract */ get foo() {}}");
+    testSameEs6("class Foo { /** @abstract */ set foo(val) {}}");
+    testWarningEs6("class Foo { /** @abstract */ static get foo() {}}", MISPLACED_ANNOTATION);
+    testWarningEs6("class Foo { /** @abstract */ static set foo(val) {}}", MISPLACED_ANNOTATION);
   }
 
   public void testAbstract_nonEmptyMethod() {
@@ -119,8 +138,35 @@ public final class CheckJsDocTest extends Es6CompilerTestCase {
   }
 
   public void testAbstract_class() {
-    testSameEs6("/** @abstract */class Foo { constructor() {}}");
+    testSameEs6("/** @abstract */ class Foo { constructor() {}}");
+    testSameEs6("/** @abstract */ exports.Foo = class {}");
+    testSameEs6("/** @abstract */ const Foo = class {}");
+    testSame("/** @abstract @constructor */ exports.Foo = function() {}");
     testSame("/** @abstract @constructor */ var Foo = function() {};");
+    testSame("/** @abstract @constructor */ var Foo = function() { var x = 1; };");
+  }
+
+  public void testAbstract_defineClass() {
+    testSame("/** @abstract */ goog.defineClass(null, { constructor: function() {} });");
+    testSame("/** @abstract */ var Foo = goog.defineClass(null, { constructor: function() {} });");
+    testSame("/** @abstract */ ns.Foo = goog.defineClass(null, { constructor: function() {} });");
+    testSame(LINE_JOINER.join(
+        "/** @abstract */ ns.Foo = goog.defineClass(null, {",
+        "  /** @abstract */ foo: function() {}",
+        "});"));
+    testSameEs6(LINE_JOINER.join(
+        "/** @abstract */ ns.Foo = goog.defineClass(null, {",
+        "  /** @abstract */ foo() {}",
+        "});"));
+    testWarning("/** @abstract */ var Foo;", MISPLACED_ANNOTATION);
+    testWarning(LINE_JOINER.join(
+        "/** @abstract */ goog.defineClass(null, {",
+        "  /** @abstract */ constructor: function() {}",
+        "});"), MISPLACED_ANNOTATION);
+    testWarningEs6(LINE_JOINER.join(
+        "/** @abstract */ goog.defineClass(null, {",
+        "  /** @abstract */ constructor() {}",
+        "});"), MISPLACED_ANNOTATION);
   }
 
   public void testAbstract_constructor() {
@@ -319,20 +365,20 @@ public final class CheckJsDocTest extends Es6CompilerTestCase {
   }
 
   public void testArrowFuncAsConstructor() {
-    testErrorEs6("/** @constructor */ var a = ()=>{}; var b = a();",
+    testWarningEs6("/** @constructor */ var a = ()=>{}; var b = a();",
         ARROW_FUNCTION_AS_CONSTRUCTOR);
-    testErrorEs6("var a = /** @constructor */ ()=>{}; var b = a();",
+    testWarningEs6("var a = /** @constructor */ ()=>{}; var b = a();",
         ARROW_FUNCTION_AS_CONSTRUCTOR);
-    testErrorEs6("/** @constructor */ let a = ()=>{}; var b = a();",
+    testWarningEs6("/** @constructor */ let a = ()=>{}; var b = a();",
         ARROW_FUNCTION_AS_CONSTRUCTOR);
-    testErrorEs6("/** @constructor */ const a = ()=>{}; var b = a();",
+    testWarningEs6("/** @constructor */ const a = ()=>{}; var b = a();",
         ARROW_FUNCTION_AS_CONSTRUCTOR);
-    testErrorEs6("var a; /** @constructor */ a = ()=>{}; var b = a();",
+    testWarningEs6("var a; /** @constructor */ a = ()=>{}; var b = a();",
         ARROW_FUNCTION_AS_CONSTRUCTOR);
   }
 
   public void testDefaultParam() {
-    testErrorEs6("function f(/** number */ x=0) {}", DEFAULT_PARAM_MUST_BE_MARKED_OPTIONAL);
+    testWarningEs6("function f(/** number */ x=0) {}", DEFAULT_PARAM_MUST_BE_MARKED_OPTIONAL);
     testSameEs6("function f(/** number= */ x=0) {}");
   }
 
@@ -394,30 +440,30 @@ public final class CheckJsDocTest extends Es6CompilerTestCase {
   }
 
   public void testInvalidAnnotation1() throws Exception {
-    testError("/** @nosideeffects */ function foo() {}", INVALID_NO_SIDE_EFFECT_ANNOTATION);
+    testWarning("/** @nosideeffects */ function foo() {}", INVALID_NO_SIDE_EFFECT_ANNOTATION);
   }
 
   public void testInvalidAnnotation2() throws Exception {
-    testError("var f = /** @nosideeffects */ function() {}", INVALID_NO_SIDE_EFFECT_ANNOTATION);
+    testWarning("var f = /** @nosideeffects */ function() {}", INVALID_NO_SIDE_EFFECT_ANNOTATION);
   }
 
   public void testInvalidAnnotation3() throws Exception {
-    testError("/** @nosideeffects */ var f = function() {}", INVALID_NO_SIDE_EFFECT_ANNOTATION);
+    testWarning("/** @nosideeffects */ var f = function() {}", INVALID_NO_SIDE_EFFECT_ANNOTATION);
   }
 
   public void testInvalidAnnotation4() throws Exception {
-    testError(
+    testWarning(
         "var f = function() {};" + "/** @nosideeffects */ f.x = function() {}",
         INVALID_NO_SIDE_EFFECT_ANNOTATION);
   }
 
   public void testInvalidAnnotation5() throws Exception {
-    testError(
+    testWarning(
         "var f = function() {};" + "f.x = /** @nosideeffects */ function() {}",
         INVALID_NO_SIDE_EFFECT_ANNOTATION);
   }
 
   public void testInvalidModifiesAnnotation() throws Exception {
-    testError("/** @modifies {this} */ var f = function() {};", INVALID_MODIFIES_ANNOTATION);
+    testWarning("/** @modifies {this} */ var f = function() {};", INVALID_MODIFIES_ANNOTATION);
   }
 }

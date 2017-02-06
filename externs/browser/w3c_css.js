@@ -416,6 +416,8 @@ function CSSUnknownRule() {}
 /**
  * @constructor
  * @extends {CSSProperties}
+ * @implements {IObject<(string|number), string>}
+ * @implements {IArrayLike<string>}
  * @see http://www.w3.org/TR/DOM-Level-2-Style/css.html#CSS-CSSStyleDeclaration
  */
 function CSSStyleDeclaration() {}
@@ -912,8 +914,9 @@ function ViewCSS() {}
  * @param {?string=} opt_pseudoElt This argument is required according to the
  *     CSS2 specification, but optional in all major browsers. See the note at
  *     https://developer.mozilla.org/en-US/docs/Web/API/Window.getComputedStyle
- * @return {CSSStyleDeclaration}
+ * @return {?CSSStyleDeclaration}
  * @see http://www.w3.org/TR/DOM-Level-2-Style/css.html#CSS-CSSview-getComputedStyle
+ * @see https://bugzilla.mozilla.org/show_bug.cgi?id=548397
  */
 ViewCSS.prototype.getComputedStyle = function(elt, opt_pseudoElt) {};
 
@@ -1969,6 +1972,15 @@ CSSProperties.prototype.justifyContent;
  */
 CSSProperties.prototype.order;
 
+// Externs for CSS Will Change Module Level 1
+// http://www.w3.org/TR/css-will-change/
+
+/**
+ * @type {string}
+ * @see http://www.w3.org/TR/css-will-change-1/#will-change
+ */
+CSSProperties.prototype.willChange;
+
 
 /**
  * TODO(dbeam): Put this in separate file named w3c_cssom.js.
@@ -2477,15 +2489,11 @@ Window.prototype.CSS;
 // http://dev.w3.org/csswg/css-font-loading/
 
 /**
- * @enum {string}
+ * Set of possible string values: 'error', 'loaded', 'loading', 'unloaded'.
+ * @typedef {string}
  * @see http://dev.w3.org/csswg/css-font-loading/#enumdef-fontfaceloadstatus
  */
-var FontFaceLoadStatus = {
-  ERROR: 'error',
-  LOADED: 'loaded',
-  LOADING: 'loading',
-  UNLOADED: 'unloaded'
-};
+var FontFaceLoadStatus;
 
 /**
  * @typedef {{
@@ -2504,10 +2512,10 @@ var FontFaceDescriptors;
  * @constructor
  * @param {string} fontFamily
  * @param {(string|ArrayBuffer|ArrayBufferView)} source
- * @param {!FontFaceDescriptors} descriptors
+ * @param {!FontFaceDescriptors=} opt_descriptors
  * @see http://dev.w3.org/csswg/css-font-loading/#font-face-constructor
  */
-function FontFace(fontFamily, source, descriptors) {}
+function FontFace(fontFamily, source, opt_descriptors) {}
 
 /**
  * @type {string}
@@ -2564,16 +2572,15 @@ FontFace.prototype.status;
 FontFace.prototype.load = function() {};
 
 /**
- * @enum
+ * Set of possible string values: 'loaded', 'loading'.
+ * @typedef {string}
  * @see http://dev.w3.org/csswg/css-font-loading/#enumdef-fontfacesetloadstatus
  */
-var FontFaceSetLoadStatus = {
-  LOADED: 'loaded',
-  LOADING: 'loading'
-};
+var FontFaceSetLoadStatus;
 
 /**
  * @interface
+ * @extends {EventTarget}
  * @see http://dev.w3.org/csswg/css-font-loading/#FontFaceSet-interface
  */
 function FontFaceSet() {}

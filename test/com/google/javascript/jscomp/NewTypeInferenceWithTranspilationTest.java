@@ -229,4 +229,208 @@ public final class NewTypeInferenceWithTranspilationTest extends NewTypeInferenc
     //     "}"),
     //     VarCheck.UNDEFINED_VAR_ERROR);
   }
+
+  public void testSuper() {
+    compilerOptions.setLanguageIn(LanguageMode.ECMASCRIPT6);
+    typeCheck(LINE_JOINER.join(
+        "class A {",
+        "  constructor(/** string */ x) {}",
+        "}",
+        "class B extends A {",
+        "  constructor() {",
+        "    super(123);",
+        "  }",
+        "}"),
+        NewTypeInference.INVALID_ARGUMENT_TYPE);
+
+    typeCheck(LINE_JOINER.join(
+        "class A {",
+        "  foo(/** string */ x) {}",
+        "}",
+        "class B extends A {",
+        "  foo(/** string */ y) {",
+        "    super.foo(123);",
+        "  }",
+        "}"),
+        NewTypeInference.INVALID_ARGUMENT_TYPE);
+
+    typeCheck(
+        LINE_JOINER.join(
+            "class A {",
+            "  /**",
+            "   * @template T",
+            "   * @param {T} x",
+            "   */",
+            "  constructor(x) {}",
+            "}",
+            "/** @extends {A<string>} */",
+            "class B extends A {",
+            "  /**",
+            "   * @param {string} x",
+            "   */",
+            "  constructor(x) {",
+            "    super(123);",
+            "  }",
+            "}"),
+        NewTypeInference.INVALID_ARGUMENT_TYPE);
+
+    typeCheck(LINE_JOINER.join(
+        "class A {",
+        "  static foo(/** string */ x) {}",
+        "}",
+        "class B extends A {",
+        "  static foo(/** string */ y) {",
+        "    super.foo(123);",
+        "  }",
+        "}"),
+        NewTypeInference.INVALID_ARGUMENT_TYPE);
+
+    // Test that when the superclass has a qualified name, using super works.
+    typeCheck(LINE_JOINER.join(
+        "/** @const */",
+        "var ns = {};",
+        "ns.A = class {",
+        "  static foo(/** string */ x) {}",
+        "};",
+        "class B extends ns.A {",
+        "  static foo(/** string */ y) {",
+        "    super.foo(123);",
+        "  }",
+        "}"),
+        NewTypeInference.INVALID_ARGUMENT_TYPE);
+  }
+
+  public void testDefaultValuesForArguments() {
+    typeCheck(LINE_JOINER.join(
+        "/** @param {{ focus: (undefined|string) }=} x */",
+        "function f(x = {}) {",
+        "  return { a: x.focus };",
+        "}"));
+  }
+
+  public void testDestructuring() {
+    typeCheck(LINE_JOINER.join(
+        "function f({ myprop1: { myprop2: prop } }) {",
+        "  return prop;",
+        "}"));
+
+    typeCheck(LINE_JOINER.join(
+        "/**",
+        " * @param {{prop: (number|undefined)}} x",
+        " * @return {number}",
+        " */",
+        "function f({prop = 1} = {}) {",
+        "  return prop;",
+        "}"));
+  }
+
+  public void testAbstractMethodCalls() {
+    typeCheck(LINE_JOINER.join(
+        "/** @abstract */",
+        "class A {",
+        "  /** @abstract */",
+        "  foo() {}",
+        "}",
+        "class B extends A {",
+        "  foo() { super.foo(); }",
+        "}"),
+        NewTypeInference.ABSTRACT_SUPER_METHOD_NOT_CALLABLE);
+
+    typeCheck(LINE_JOINER.join(
+        "/** @abstract */",
+        "class A {",
+        "  foo() {}",
+        "}",
+        "class B extends A {",
+        "  foo() { super.foo(); }",
+        "}"));
+
+    typeCheck(LINE_JOINER.join(
+        "/** @abstract */",
+        "class A {",
+        "  /** @abstract */",
+        "  foo() {}",
+        "  bar() {",
+        "    this.foo();",
+        "  }",
+        "}",
+        "class B extends A {",
+        "  foo() {}",
+        "  bar() {",
+        "    this.foo();",
+        "  }",
+        "}"));
+
+    typeCheck(LINE_JOINER.join(
+        "/** @abstract */",
+        "class A {",
+        "  /** @abstract */",
+        "  foo() {}",
+        "}",
+        "class B extends A {",
+        "  foo() {}",
+        "  /** @param {!Array} arr */",
+        "  bar(arr) {",
+        "    this.foo(...arr);",
+        "  }",
+        "}"));
+
+    // This should generate a warning
+    typeCheck(LINE_JOINER.join(
+        "/** @abstract */",
+        "class A {",
+        "  /** @abstract */",
+        "  foo() {}",
+        "}",
+        "class B extends A {",
+        "  foo() {}",
+        "  bar() {",
+        "    A.prototype.foo();",
+        "  }",
+        "}"));
+
+    typeCheck(LINE_JOINER.join(
+        "/** @abstract */",
+        "class A {",
+        "  /** @abstract */",
+        "  foo() {}",
+        "}",
+        "class B extends A {",
+        "  foo() {}",
+        "  bar() {",
+        "    B.prototype.foo();",
+        "  }",
+        "}"));
+
+    typeCheck(LINE_JOINER.join(
+        "/** @abstract */",
+        "class A {",
+        "  /** @abstract */",
+        "  foo() {}",
+        "  bar() {}",
+        "}",
+        "class B extends A {",
+        "  foo() {}",
+        "  bar() {",
+        "    A.prototype.bar();",
+        "  }",
+        "}"));
+  }
+
+  // super is handled natively in both type checkers, which results in ASTs that
+  // are temporarily invalid: a super call that is not in a class.
+  // Avoid crashing.
+  public void testDontCrashWithInvalidIntermediateASTwithSuper() {
+    typeCheck(LINE_JOINER.join(
+        "class Foo {}",
+        "function g(x) {}",
+        "g(function f(x) { return class extends Foo {} });"));
+  }
+
+  public void testDontWarnAboutUnknownExtends() {
+    typeCheck(LINE_JOINER.join(
+        "function f(clazz) {",
+        "  class Foo extends clazz {}",
+        "}"));
+  }
 }

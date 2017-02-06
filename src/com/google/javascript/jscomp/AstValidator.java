@@ -73,16 +73,14 @@ public final class AstValidator implements CompilerPass {
   }
 
   public void validateRoot(Node n) {
-    validateNodeType(Token.BLOCK, n);
-    validateIsSynthetic(n);
+    validateNodeType(Token.ROOT, n);
     validateChildCount(n, 2);
     validateCodeRoot(n.getFirstChild());
     validateCodeRoot(n.getLastChild());
   }
 
   public void validateCodeRoot(Node n) {
-    validateNodeType(Token.BLOCK, n);
-    validateIsSynthetic(n);
+    validateNodeType(Token.ROOT, n);
     for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
       validateScript(c);
     }
@@ -136,6 +134,9 @@ public final class AstValidator implements CompilerPass {
         return;
       case FOR:
         validateFor(n);
+        return;
+      case FOR_IN:
+        validateForIn(n);
         return;
       case FOR_OF:
         validateForOf(n);
@@ -405,16 +406,16 @@ public final class AstValidator implements CompilerPass {
 
   private void validateImportSpecifiers(Node n) {
     validateNodeType(Token.IMPORT_SPECS, n);
-    for (Node child : n.children()) {
-      validateImportSpecifier(child);
+    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
+      validateImportSpecifier(c);
     }
   }
 
   private void validateImportSpecifier(Node n) {
     validateNodeType(Token.IMPORT_SPEC, n);
     validateChildCountIn(n, 1, 2);
-    for (Node child : n.children()) {
-      validateName(child);
+    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
+      validateName(c);
     }
   }
 
@@ -434,7 +435,7 @@ public final class AstValidator implements CompilerPass {
       } else {
         validateStatement(n.getFirstChild(), isAmbient);
       }
-      if (n.getChildCount() == 2) {
+      if (n.hasTwoChildren()) {
         validateString(n.getSecondChild());
       }
     }
@@ -442,16 +443,16 @@ public final class AstValidator implements CompilerPass {
 
   private void validateExportSpecifiers(Node n) {
     validateNodeType(Token.EXPORT_SPECS, n);
-    for (Node child : n.children()) {
-      validateExportSpecifier(child);
+    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
+      validateExportSpecifier(c);
     }
   }
 
   private void validateExportSpecifier(Node n) {
     validateNodeType(Token.EXPORT_SPEC, n);
     validateChildCountIn(n, 1, 2);
-    for (Node child : n.children()) {
-      validateName(child);
+    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
+      validateName(c);
     }
   }
 
@@ -469,8 +470,8 @@ public final class AstValidator implements CompilerPass {
     if (!n.hasChildren()) {
       return;
     }
-    for (int i = 0; i < n.getChildCount(); i++) {
-      Node child = n.getChildAtIndex(i);
+    int i = 0;
+    for (Node child = n.getFirstChild(); child != null; child = child.getNext(), i++) {
       // If the first child is not a STRING, this is a tagged template.
       if (i == 0 && !child.isString()) {
         validateExpression(child);
@@ -505,15 +506,15 @@ public final class AstValidator implements CompilerPass {
 
   private void validateInterfaceExtends(Node n) {
     validateNodeType(Token.INTERFACE_EXTENDS, n);
-    for (Node child : n.children()) {
-      validateNamedType(child);
+    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
+      validateNamedType(c);
     }
   }
 
   private void validateInterfaceMembers(Node n) {
     validateNodeType(Token.INTERFACE_MEMBERS, n);
-    for (Node child : n.children()) {
-      validateInterfaceMember(child);
+    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
+      validateInterfaceMember(c);
     }
   }
 
@@ -546,8 +547,8 @@ public final class AstValidator implements CompilerPass {
 
   private void validateEnumMembers(Node n) {
     validateNodeType(Token.ENUM_MEMBERS, n);
-    for (Node child : n.children()) {
-      validateObjectLitStringKey(child);
+    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
+      validateObjectLitStringKey(c);
     }
   }
 
@@ -588,7 +589,7 @@ public final class AstValidator implements CompilerPass {
 
   private void validateClassMembers(Node n, boolean isAmbient) {
     validateNodeType(Token.CLASS_MEMBERS, n);
-    for (Node c : n.children()) {
+    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
       validateClassMember(c, isAmbient);
     }
   }
@@ -630,20 +631,6 @@ public final class AstValidator implements CompilerPass {
     validateNodeType(Token.BLOCK, n);
     for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
       validateStatement(c);
-    }
-  }
-
-  private void validateSyntheticBlock(Node n) {
-    validateNodeType(Token.BLOCK, n);
-    validateIsSynthetic(n);
-    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
-      validateStatement(c);
-    }
-  }
-
-  private void validateIsSynthetic(Node n) {
-    if (!n.getBooleanProp(Node.SYNTHETIC_BLOCK_PROP)) {
-      violation("Missing 'synthetic block' annotation.", n);
     }
   }
 
@@ -739,7 +726,7 @@ public final class AstValidator implements CompilerPass {
     if (n.isArrowFunction()) {
       validateEs6Feature("arrow functions", n);
       validateEmptyName(name);
-      if (body.getToken() == Token.BLOCK) {
+      if (body.isNormalBlock()) {
         validateBlock(body);
       } else {
         validateExpression(body);
@@ -942,18 +929,18 @@ public final class AstValidator implements CompilerPass {
 
   private void validateFor(Node n) {
     validateNodeType(Token.FOR, n);
-    if (NodeUtil.isForIn(n)) {
-      // FOR-IN
-      validateChildCount(n, 3);
-      validateVarOrAssignmentTarget(n.getFirstChild());
-      validateExpression(n.getSecondChild());
-    } else {
-      // FOR
-      validateChildCount(n, 4);
-      validateVarOrOptionalExpression(n.getFirstChild());
-      validateOptionalExpression(n.getSecondChild());
-      validateOptionalExpression(n.getChildAtIndex(2));
-    }
+    validateChildCount(n, 4);
+    validateVarOrOptionalExpression(n.getFirstChild());
+    validateOptionalExpression(n.getSecondChild());
+    validateOptionalExpression(n.getChildAtIndex(2));
+    validateBlock(n.getLastChild());
+  }
+
+  private void validateForIn(Node n) {
+    validateNodeType(Token.FOR_IN, n);
+    validateChildCount(n, 3);
+    validateVarOrAssignmentTarget(n.getFirstChild());
+    validateExpression(n.getSecondChild());
     validateBlock(n.getLastChild());
   }
 
@@ -1080,7 +1067,14 @@ public final class AstValidator implements CompilerPass {
   private void validateCatch(Node n) {
     validateNodeType(Token.CATCH, n);
     validateChildCount(n);
-    validateName(n.getFirstChild());
+    Node caught = n.getFirstChild();
+    if (caught.isName()) {
+      validateName(caught);
+    } else if (n.isArrayPattern()) {
+      validateArrayPattern(Token.CATCH, caught);
+    } else {
+      validateObjectPattern(Token.CATCH, caught);
+    }
     validateBlock(n.getLastChild());
   }
 
@@ -1117,14 +1111,14 @@ public final class AstValidator implements CompilerPass {
   private void validateDefaultCase(Node n) {
     validateNodeType(Token.DEFAULT_CASE, n);
     validateChildCount(n);
-    validateSyntheticBlock(n.getLastChild());
+    validateBlock(n.getLastChild());
   }
 
   private void validateCase(Node n) {
     validateNodeType(Token.CASE, n);
     validateChildCount(n);
     validateExpression(n.getFirstChild());
-    validateSyntheticBlock(n.getLastChild());
+    validateBlock(n.getLastChild());
   }
 
   private void validateOptionalExpression(Node n) {
@@ -1419,11 +1413,11 @@ public final class AstValidator implements CompilerPass {
 
   private void validateNamespaceElements(Node n, boolean isAmbient) {
     validateNodeType(Token.NAMESPACE_ELEMENTS, n);
-    for (Node child : n.children()) {
+    for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
       if (isAmbient) {
-        validateAmbientDeclarationHelper(child);
+        validateAmbientDeclarationHelper(c);
       } else {
-        validateStatement(child);
+        validateStatement(c);
       }
     }
   }
@@ -1471,9 +1465,7 @@ public final class AstValidator implements CompilerPass {
     }
 
     if (!valid) {
-      violation(
-          "Expected at least " + i + " children, but was "
-              + n.getChildCount(), n);
+      violation("Expected at least " + i + " children, but was " + n.getChildCount(), n);
     }
   }
 
@@ -1487,9 +1479,7 @@ public final class AstValidator implements CompilerPass {
       valid = n.getChildCount() <= i;
     }
     if (!valid) {
-      violation(
-          "Expected no more than " + i + " children, but was "
-              + n.getChildCount(), n);
+      violation("Expected no more than " + i + " children, but was " + n.getChildCount(), n);
     }
   }
 

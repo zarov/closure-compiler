@@ -152,7 +152,6 @@ import com.google.javascript.rhino.StaticSourceFile;
 import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.TokenStream;
 import com.google.javascript.rhino.dtoa.DToA;
-
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -162,6 +161,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import javax.annotation.Nullable;
 
 /**
  * IRFactory transforms the external AST to the internal AST.
@@ -252,6 +252,13 @@ class IRFactory {
           "implements", "interface", "let", "package", "private", "protected",
           "public", "static", "yield");
 
+  private static final Pattern COMMENT_PATTERN =
+      Pattern.compile("(/|(\n[ \t]*))\\*[ \t]*@[a-zA-Z]+[ \t\n{]");
+
+  /**
+   * If non-null, use this set of keywords instead of TokenStream.isKeyword().
+   */
+  @Nullable
   private final Set<String> reservedKeywords;
   private final Set<Comment> parsedComments = new HashSet<>();
 
@@ -305,23 +312,12 @@ class IRFactory {
     // The template node properties are applied to all nodes in this transform.
     this.templateNode = createTemplateNode();
 
-    switch (config.languageMode) {
-      case ECMASCRIPT3:
-        reservedKeywords = null; // use TokenStream.isKeyword instead
-        break;
-      case ECMASCRIPT5:
-      case ECMASCRIPT6:
-        reservedKeywords = ES5_RESERVED_KEYWORDS;
-        break;
-      case ECMASCRIPT5_STRICT:
-      case ECMASCRIPT6_STRICT:
-      case ECMASCRIPT6_TYPED:
-      case ECMASCRIPT7:
-      case ECMASCRIPT8:
-        reservedKeywords = ES5_STRICT_RESERVED_KEYWORDS;
-        break;
-      default:
-        throw new IllegalStateException("unknown language mode: " + config.languageMode);
+    if (config.strictMode == StrictMode.STRICT) {
+      reservedKeywords = ES5_STRICT_RESERVED_KEYWORDS;
+    } else if (config.languageMode == LanguageMode.ECMASCRIPT3) {
+      reservedKeywords = null; // use TokenStream.isKeyword instead
+    } else {
+      reservedKeywords = ES5_RESERVED_KEYWORDS;
     }
   }
 
@@ -359,7 +355,7 @@ class IRFactory {
 
     if (tree.sourceComments != null) {
       for (Comment comment : tree.sourceComments) {
-        if (comment.type == Comment.Type.JSDOC
+        if ((comment.type == Comment.Type.JSDOC || comment.type == Comment.Type.IMPORTANT)
             && !irFactory.parsedComments.contains(comment)) {
           irFactory.handlePossibleFileOverviewJsDoc(comment);
         } else if (comment.type == Comment.Type.BLOCK) {
@@ -386,10 +382,12 @@ class IRFactory {
     return irFactory.features;
   }
 
-  static final Config NULL_CONFIG = new Config(
-      ImmutableSet.<String>of(),
-      ImmutableSet.<String>of(),
-      LanguageMode.ECMASCRIPT6_TYPED);
+  static final Config NULL_CONFIG =
+      new Config(
+          ImmutableSet.<String>of(),
+          ImmutableSet.<String>of(),
+          LanguageMode.TYPESCRIPT,
+          Config.StrictMode.STRICT);
 
   static final ErrorReporter NULL_REPORTER = new ErrorReporter() {
     @Override
@@ -509,6 +507,7 @@ class IRFactory {
   private static boolean isBreakTarget(Node n) {
     switch (n.getToken()) {
       case FOR:
+      case FOR_IN:
       case FOR_OF:
       case WHILE:
       case DO:
@@ -522,6 +521,7 @@ class IRFactory {
   private static boolean isContinueTarget(Node n) {
     switch (n.getToken()) {
       case FOR:
+      case FOR_IN:
       case FOR_OF:
       case WHILE:
       case DO:
@@ -612,9 +612,9 @@ class IRFactory {
 
   Node transformBlock(ParseTree node) {
     Node irNode = transform(node);
-    if (!irNode.isBlock()) {
+    if (!irNode.isNormalBlock()) {
       if (irNode.isEmpty()) {
-        irNode.setType(Token.BLOCK);
+        irNode.setToken(Token.BLOCK);
       } else {
         Node newBlock = newNode(Token.BLOCK, irNode);
         setSourceInfo(newBlock, irNode);
@@ -629,8 +629,7 @@ class IRFactory {
    * Check to see if the given block comment looks like it should be JSDoc.
    */
   private void handleBlockComment(Comment comment) {
-    Pattern p = Pattern.compile("(/|(\n[ \t]*))\\*[ \t]*@[a-zA-Z]+[ \t\n{]");
-    if (p.matcher(comment.value).find()) {
+    if (COMMENT_PATTERN.matcher(comment.value).find()) {
       errorReporter.warning(
           SUSPICIOUS_COMMENT_WARNING,
           sourceName,
@@ -908,7 +907,12 @@ class IRFactory {
           errorReporter);
     jsdocParser.setFileLevelJsDocBuilder(fileLevelJsDocBuilder);
     jsdocParser.setFileOverviewJSDocInfo(fileOverviewInfo);
-    jsdocParser.parse();
+    if (node.type == Comment.Type.IMPORTANT && node.value.length() > 0) {
+      jsdocParser.parseImportantComment();
+    } else {
+      jsdocParser.parse();
+    }
+
     return jsdocParser;
   }
 
@@ -1026,7 +1030,7 @@ class IRFactory {
       }
       parseDirectives(scriptNode);
       if (isGoogModuleFile(scriptNode)) {
-        Node moduleNode = new Node(Token.MODULE_BODY);
+        Node moduleNode = newNode(Token.MODULE_BODY);
         setSourceInfo(moduleNode, rootNode);
         moduleNode.addChildrenToBack(scriptNode.removeChildren());
         scriptNode.addChildToBack(moduleNode);
@@ -1166,10 +1170,7 @@ class IRFactory {
             lineno(loopNode.initializer), charno(loopNode.initializer));
       }
       return newNode(
-          Token.FOR,
-          initializer,
-          transform(loopNode.collection),
-          transformBlock(loopNode.body));
+          Token.FOR_IN, initializer, transform(loopNode.collection), transformBlock(loopNode.body));
     }
 
     Node processForOf(ForOfStatementTree loopNode) {
@@ -1282,7 +1283,7 @@ class IRFactory {
       maybeProcessType(node, functionTree.returnType);
 
       Node bodyNode = transform(functionTree.functionBody);
-      if (!isArrow && !isSignature && !bodyNode.isBlock()) {
+      if (!isArrow && !isSignature && !bodyNode.isNormalBlock()) {
         // When in "keep going" mode the parser tries to parse some constructs the
         // compiler doesn't support, repair it here.
         Preconditions.checkState(config.keepGoing == Config.RunMode.KEEP_GOING);
@@ -1515,7 +1516,8 @@ class IRFactory {
         isIdentifier = config.languageMode == LanguageMode.ECMASCRIPT3;
       }
       if (reservedKeywords != null && reservedKeywords.contains(identifier)) {
-        isIdentifier = true;
+        features = features.require(Feature.KEYWORDS_AS_PROPERTIES);
+        isIdentifier = config.languageMode == LanguageMode.ECMASCRIPT3;
       }
       if (isIdentifier) {
         errorReporter.error(
@@ -1640,7 +1642,7 @@ class IRFactory {
 
     Node processGetAccessor(GetAccessorTree tree) {
       Node key = processObjectLitKeyAsString(tree.propertyName);
-      key.setType(Token.GETTER_DEF);
+      key.setToken(Token.GETTER_DEF);
       Node body = transform(tree.body);
       Node dummyName = IR.name("");
       setSourceInfo(dummyName, tree.body);
@@ -1656,7 +1658,7 @@ class IRFactory {
 
     Node processSetAccessor(SetAccessorTree tree) {
       Node key = processObjectLitKeyAsString(tree.propertyName);
-      key.setType(Token.SETTER_DEF);
+      key.setToken(Token.SETTER_DEF);
       Node body = transform(tree.body);
       Node dummyName = IR.name("");
       setSourceInfo(dummyName, tree.propertyName);
@@ -1676,7 +1678,7 @@ class IRFactory {
       // so that it's clear we don't support annotations like
       //   function f({x: /** string */ y}) {}
       Node key = processObjectLitKeyAsString(tree.name);
-      key.setType(Token.STRING_KEY);
+      key.setToken(Token.STRING_KEY);
       if (tree.value != null) {
         key.addChildToFront(transform(tree.value));
       }
@@ -1824,7 +1826,7 @@ class IRFactory {
       ParseTree expr = caseNode.expression;
       Node node = newNode(Token.CASE, transform(expr));
       Node block = newNode(Token.BLOCK);
-      block.putBooleanProp(Node.SYNTHETIC_BLOCK_PROP, true);
+      block.setIsAddedBlock(true);
       setSourceInfo(block, caseNode);
       if (caseNode.statements != null) {
         for (ParseTree child : caseNode.statements) {
@@ -1838,7 +1840,7 @@ class IRFactory {
     Node processSwitchDefault(DefaultClauseTree caseNode) {
       Node node = newNode(Token.DEFAULT_CASE);
       Node block = newNode(Token.BLOCK);
-      block.putBooleanProp(Node.SYNTHETIC_BLOCK_PROP, true);
+      block.setIsAddedBlock(true);
       setSourceInfo(block, caseNode);
       if (caseNode.statements != null) {
         for (ParseTree child : caseNode.statements) {
@@ -2217,11 +2219,11 @@ class IRFactory {
 
     Node processExportSpec(ExportSpecifierTree tree) {
       Node importedName = processName(tree.importedName, true);
-      importedName.setType(Token.NAME);
+      importedName.setToken(Token.NAME);
       Node exportSpec = newNode(Token.EXPORT_SPEC, importedName);
       if (tree.destinationName != null) {
         Node destinationName = processName(tree.destinationName, true);
-        destinationName.setType(Token.NAME);
+        destinationName.setToken(Token.NAME);
         exportSpec.addChildToBack(destinationName);
       }
       return exportSpec;
@@ -2242,7 +2244,7 @@ class IRFactory {
 
     Node processImportSpec(ImportSpecifierTree tree) {
       Node importedName = processName(tree.importedName, true);
-      importedName.setType(Token.NAME);
+      importedName.setToken(Token.NAME);
       Node importSpec = newNode(Token.IMPORT_SPEC, importedName);
       if (tree.destinationName != null) {
         importSpec.addChildToBack(processName(tree.destinationName));
@@ -2594,7 +2596,7 @@ class IRFactory {
     }
 
     void maybeWarnTypeSyntax(ParseTree node, Feature feature) {
-      if (config.languageMode != LanguageMode.ECMASCRIPT6_TYPED) {
+      if (config.languageMode != LanguageMode.TYPESCRIPT) {
         errorReporter.warning(
             "type syntax is only supported in ES6 typed mode: " + feature,
             sourceName,
@@ -2985,7 +2987,7 @@ class IRFactory {
   private boolean inStrictContext() {
     // TODO(johnlenz): in ECMASCRIPT5/6 is a "mixed" mode and we should track the context
     // that we are in, if we want to support it.
-    return config.languageMode.strictMode == StrictMode.STRICT;
+    return config.strictMode == StrictMode.STRICT;
   }
 
   double normalizeNumber(LiteralToken token) {

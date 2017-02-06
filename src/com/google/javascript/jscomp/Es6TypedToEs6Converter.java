@@ -27,7 +27,6 @@ import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Node.TypeDeclarationNode;
 import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.TypeDeclarationsIR;
-
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
@@ -305,7 +304,7 @@ public final class Es6TypedToEs6Converter implements NodeTraversal.Callback, Hot
         if (function.isOptionalEs6Typed()) {
           member = convertMemberFunctionToMemberVariable(member);
         } else {
-          function.getLastChild().setType(Token.BLOCK);
+          function.getLastChild().setToken(Token.BLOCK);
         }
       }
 
@@ -318,10 +317,10 @@ public final class Es6TypedToEs6Converter implements NodeTraversal.Callback, Hot
     n.setJSDocInfo(doc.build());
 
     // Convert interface to class
-    n.setType(Token.CLASS);
+    n.setToken(Token.CLASS);
     Node empty = new Node(Token.EMPTY).useSourceInfoIfMissingFrom(n);
     n.replaceChild(superTypes, empty);
-    members.setType(Token.CLASS_MEMBERS);
+    members.setToken(Token.CLASS_MEMBERS);
 
     maybeCreateQualifiedDeclaration(n, parent);
     compiler.reportCodeChange();
@@ -380,8 +379,8 @@ public final class Es6TypedToEs6Converter implements NodeTraversal.Callback, Hot
     Node members = n.getLastChild();
     double nextValue = 0;
     Node[] stringKeys = new Node[members.getChildCount()];
-    for (int i = 0; i < members.getChildCount(); i++) {
-      Node child = members.getChildAtIndex(i);
+    int i = 0;
+    for (Node child = members.getFirstChild(); child != null; child = child.getNext(), i++) {
       if (child.hasChildren()) {
         nextValue = child.getFirstChild().getDouble() + 1;
       } else {
@@ -389,9 +388,7 @@ public final class Es6TypedToEs6Converter implements NodeTraversal.Callback, Hot
       }
       stringKeys[i] = child;
     }
-    for (Node child : stringKeys) {
-      child.detach();
-    }
+    members.detachChildren();
 
     String oldName = name.getString();
     String qName = maybePrependCurrNamespace(oldName);
@@ -545,7 +542,7 @@ public final class Es6TypedToEs6Converter implements NodeTraversal.Callback, Hot
       if (c.getToken() == Token.CONST) {
         JSDocInfoBuilder builder = JSDocInfoBuilder.maybeCopyFrom(c.getJSDocInfo());
         builder.recordConstancy();
-        c.setType(Token.VAR);
+        c.setToken(Token.VAR);
         c.setJSDocInfo(builder.build());
       }
 
@@ -730,7 +727,7 @@ public final class Es6TypedToEs6Converter implements NodeTraversal.Callback, Hot
             continue;
           }
           Node colon = new Node(Token.COLON);
-          member.setType(Token.STRING_KEY);
+            member.setToken(Token.STRING_KEY);
           Node memberType =
               maybeProcessOptionalProperty(member, member.getDeclaredTypeExpression());
           member.setDeclaredTypeExpression(null);
@@ -826,7 +823,7 @@ public final class Es6TypedToEs6Converter implements NodeTraversal.Callback, Hot
     }
 
     memberVariable.putBooleanProp(Node.OPT_ES6_TYPED, function.isOptionalEs6Typed());
-    member.getParent().replaceChild(member, memberVariable);
+    member.replaceWith(memberVariable);
     return memberVariable;
   }
 
@@ -882,11 +879,10 @@ public final class Es6TypedToEs6Converter implements NodeTraversal.Callback, Hot
     @Override
     public boolean shouldTraverse(NodeTraversal t, Node n, Node parent) {
       switch (n.getToken()) {
+        case ROOT:
         case SCRIPT:
         case NAMESPACE_ELEMENTS:
           return true;
-        case BLOCK:
-          return n.getFirstChild() != null && n.getFirstChild().isScript();
         case DECLARE:
           return n.getFirstChild().getToken() == Token.NAMESPACE;
         case EXPORT:

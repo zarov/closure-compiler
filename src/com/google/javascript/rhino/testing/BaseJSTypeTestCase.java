@@ -120,6 +120,7 @@ public abstract class BaseJSTypeTestCase extends TestCase {
     super.setUp();
     errorReporter = new TestErrorReporter(null, null);
     registry = new JSTypeRegistry(errorReporter, ImmutableSet.of("forwardDeclared"));
+    registry.setOptimizePropertyIndex_TRANSITIONAL_METHOD(true);
     initTypes();
   }
 
@@ -380,6 +381,7 @@ public abstract class BaseJSTypeTestCase extends TestCase {
     addMethod(registry, stringPrototype, "search", numberType);
     addMethod(registry, stringPrototype, "slice", stringType);
     addMethod(registry, stringPrototype, "split", arrayType);
+    addMethod(registry, stringPrototype, "substr", stringType);
     addMethod(registry, stringPrototype, "substring", stringType);
     addMethod(registry, stringPrototype, "toLowerCase", stringType);
     addMethod(registry, stringPrototype, "toLocaleLowerCase", stringType);

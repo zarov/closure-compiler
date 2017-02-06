@@ -22,7 +22,6 @@ import com.google.javascript.jscomp.MakeDeclaredNamesUnique.ContextualRenamer;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.Set;
 
 /**
@@ -477,7 +476,7 @@ class ExpressionDecomposer {
 
       Node rightOperand = parent.getLastChild();
 
-      parent.setType(Token.ASSIGN);
+      parent.setToken(Token.ASSIGN);
       parent.replaceChild(rightOperand, opNode);
       opNode.addChildToFront(replacementValueNode);
       opNode.addChildToBack(rightOperand);
@@ -673,9 +672,10 @@ class ExpressionDecomposer {
           return parent;
         // Any of these indicate an unsupported expression:
         case FOR:
-          if (!NodeUtil.isForIn(parent) && child == parent.getFirstChild()) {
+          if (child == parent.getFirstChild()) {
             return parent;
           }
+        case FOR_IN:
         case SCRIPT:
         case BLOCK:
         case LABEL:

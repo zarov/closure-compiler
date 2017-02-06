@@ -17,9 +17,11 @@
 package com.google.javascript.jscomp;
 
 import com.google.common.base.Predicate;
+import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Multimap;
+import com.google.common.collect.Table;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.jscomp.Normalize.NormalizeStatements;
 import com.google.javascript.rhino.IR;
@@ -29,7 +31,7 @@ import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
 import java.util.Collection;
-import java.util.HashMap;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -47,8 +49,11 @@ import java.util.Set;
 public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCallback
     implements HotSwapCompilerPass {
 
+  private static final Set<Token> LOOP_TOKENS =
+      EnumSet.of(Token.WHILE, Token.FOR, Token.FOR_IN, Token.FOR_OF, Token.DO, Token.FUNCTION);
+
   private final AbstractCompiler compiler;
-  private final Map<Node, Map<String, String>> renameMap = new LinkedHashMap<>();
+  private final Table<Node, String, String> renameTable = HashBasedTable.create();
   private final Set<Node> letConsts = new HashSet<>();
   private final Set<String> undeclaredNames = new HashSet<>();
 
@@ -83,28 +88,20 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
       letConsts.add(n);
     }
     Scope hoistScope = scope.getClosestHoistScope();
-    boolean doRename = false;
     if (scope != hoistScope) {
-      doRename = hoistScope.isDeclared(oldName, true)
-          || undeclaredNames.contains(oldName);
-      String newName = doRename
-          ? oldName + "$" + compiler.getUniqueNameIdSupplier().get()
-          : oldName;
+      String newName = oldName;
+      if (hoistScope.isDeclared(oldName, true) || undeclaredNames.contains(oldName)) {
+        do {
+          newName = oldName + "$" + compiler.getUniqueNameIdSupplier().get();
+        } while (hoistScope.isDeclared(newName, true));
+        nameNode.setString(newName);
+        Node scopeRoot = scope.getRootNode();
+        renameTable.put(scopeRoot, oldName, newName);
+        compiler.reportCodeChange();
+      }
       Var oldVar = scope.getVar(oldName);
       scope.undeclare(oldVar);
       hoistScope.declare(newName, nameNode, oldVar.input);
-      if (doRename) {
-        nameNode.setString(newName);
-        Node scopeRoot = scope.getRootNode();
-        if (!renameMap.containsKey(scopeRoot)) {
-          renameMap.put(scopeRoot, new HashMap<String, String>());
-        }
-
-        renameMap.get(scopeRoot).put(oldName, newName);
-      }
-    }
-    if (doRename) {
-      compiler.reportCodeChange();
     }
   }
 
@@ -116,7 +113,7 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
     NodeTraversal.traverseEs6(compiler, root, this);
     // Needed for let / const declarations in .d.ts externs.
     TranspilationPasses.processTranspile(compiler, externs, this);
-    NodeTraversal.traverseEs6(compiler, root, new Es6RenameReferences(renameMap));
+    NodeTraversal.traverseEs6(compiler, root, new Es6RenameReferences(renameTable));
     LoopClosureTransformer transformer = new LoopClosureTransformer();
     NodeTraversal.traverseEs6(compiler, root, transformer);
     transformer.transformLoopClosure();
@@ -130,7 +127,7 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
   public void hotSwapScript(Node scriptRoot, Node originalRoot) {
     NodeTraversal.traverseEs6(compiler, scriptRoot, new CollectUndeclaredNames());
     NodeTraversal.traverseEs6(compiler, scriptRoot, this);
-    NodeTraversal.traverseEs6(compiler, scriptRoot, new Es6RenameReferences(renameMap));
+    NodeTraversal.traverseEs6(compiler, scriptRoot, new Es6RenameReferences(renameTable));
     LoopClosureTransformer transformer = new LoopClosureTransformer();
     NodeTraversal.traverseEs6(compiler, scriptRoot, transformer);
     transformer.transformLoopClosure();
@@ -147,17 +144,12 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
     return enclosingNode != null && enclosingNode.getToken() != Token.FUNCTION;
   }
 
-  private static final Predicate<Node> loopPredicate =
-      new Predicate<Node>() {
-        @Override
-        public boolean apply(Node n) {
-          return n.getToken() == Token.WHILE
-              || n.getToken() == Token.FOR
-              || n.getToken() == Token.FOR_OF
-              || n.getToken() == Token.DO
-              || n.getToken() == Token.FUNCTION;
-        }
-      };
+  private static final Predicate<Node> loopPredicate = new Predicate<Node>() {
+    @Override
+    public boolean apply(Node n) {
+      return LOOP_TOKENS.contains(n.getToken());
+    }
+  };
 
   private static void extractInlineJSDoc(Node srcDeclaration, Node srcName, Node destDeclaration) {
     JSDocInfo existingInfo = srcDeclaration.getJSDocInfo();
@@ -174,7 +166,7 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
       Node destDeclaration) {
     if (srcDeclaration.isConst()
         // Don't add @const for the left side of a for/in. If we do we get warnings from the NTI.
-        && !(NodeUtil.isForIn(srcParent) && srcDeclaration == srcParent.getFirstChild())) {
+        && !(srcParent.isForIn() && srcDeclaration == srcParent.getFirstChild())) {
       extractInlineJSDoc(srcDeclaration, srcName, destDeclaration);
       JSDocInfoBuilder builder = JSDocInfoBuilder.maybeCopyFrom(destDeclaration.getJSDocInfo());
       builder.recordConstancy();
@@ -191,7 +183,15 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
       parent.addChildAfter(newDeclaration, declarationList);
     }
     maybeAddConstJSDoc(declarationList, parent, declarationList.getFirstChild(), declarationList);
-    declarationList.setType(Token.VAR);
+    declarationList.setToken(Token.VAR);
+  }
+
+  private static void addNodeBeforeLoop(Node newNode, Node loopNode) {
+    Node insertSpot = loopNode;
+    while (insertSpot.getParent().isLabel()) {
+      insertSpot = insertSpot.getParent();
+    }
+    insertSpot.getParent().addChildBefore(newNode, insertSpot);
   }
 
   private void varify() {
@@ -200,15 +200,13 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
         if (n.isConst()) {
           handleDeclarationList(n, n.getParent());
         }
-        n.setType(Token.VAR);
+        n.setToken(Token.VAR);
       }
       compiler.reportCodeChange();
     }
   }
 
-  private class RewriteBlockScopedFunctionDeclaration extends
-      AbstractPostOrderCallback {
-
+  private class RewriteBlockScopedFunctionDeclaration extends AbstractPostOrderCallback {
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
       if (n.isFunction() && NormalizeStatements.maybeNormalizeFunctionDeclaration(n)) {
@@ -218,7 +216,7 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
   }
 
   /**
-   * Record undeclared names and aggressively rename possible references to them.
+   * Records undeclared names and aggressively rename possible references to them.
    * Eg: In "{ let inner; } use(inner);", we rename the let declared variable.
    */
   private class CollectUndeclaredNames extends AbstractPostOrderCallback {
@@ -286,25 +284,30 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
 
       // Traverse scopes from reference scope to declaration scope.
       // If we hit a function - loop closure detected.
-      for (Scope s = referencedIn; s != declaredIn; s = s.getParent()) {
-        if (s.isFunctionBlockScope()) {
-          Node function = s.getRootNode().getParent();
-          if (functionHandledMap.containsEntry(function, name)) {
-            return;
-          }
-          functionHandledMap.put(function, name);
+      Scope outerMostFunctionScope = null;
+      for (Scope s = referencedIn; s != declaredIn && s.getRootNode() != loopNode;
+          s = s.getParent()) {
+        if (s.isFunctionScope()) {
+          outerMostFunctionScope = s;
+        }
+      }
 
-          if (!loopObjectMap.containsKey(loopNode)) {
-            loopObjectMap.put(loopNode,
-                new LoopObject(
-                    LOOP_OBJECT_NAME + "$" + compiler.getUniqueNameIdSupplier().get()));
-          }
-          LoopObject object = loopObjectMap.get(loopNode);
-          object.vars.add(var);
-
-          functionLoopObjectsMap.put(function,  object);
+      if (outerMostFunctionScope != null) {
+        Node function = outerMostFunctionScope.getRootNode();
+        if (functionHandledMap.containsEntry(function, name)) {
           return;
         }
+        functionHandledMap.put(function, name);
+
+        if (!loopObjectMap.containsKey(loopNode)) {
+          loopObjectMap.put(loopNode,
+              new LoopObject(
+                  LOOP_OBJECT_NAME + "$" + compiler.getUniqueNameIdSupplier().get()));
+        }
+        LoopObject object = loopObjectMap.get(loopNode);
+        object.vars.add(var);
+
+        functionLoopObjectsMap.put(function,  object);
       }
     }
 
@@ -329,8 +332,8 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
         Node updateLoopObject = IR.assign(IR.name(object.name), objectLitNextIteration);
         Node objectLit =
             IR.var(IR.name(object.name), IR.objectlit()).useSourceInfoFromForTree(loopNode);
-        loopNode.getParent().addChildBefore(objectLit, loopNode);
-        if (NodeUtil.isVanillaFor(loopNode)) { // For
+        addNodeBeforeLoop(objectLit, loopNode);
+        if (loopNode.isVanillaFor()) { // For
           // The initializer is pulled out and placed prior to the loop.
           Node initializer = loopNode.getFirstChild();
           loopNode.replaceChild(initializer, IR.empty());
@@ -338,7 +341,7 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
             if (!NodeUtil.isNameDeclaration(initializer)) {
               initializer = IR.exprResult(initializer).useSourceInfoFrom(initializer);
             }
-            loopNode.getParent().addChildBefore(initializer, loopNode);
+            addNodeBeforeLoop(initializer, loopNode);
           }
 
           Node increment = loopNode.getChildAtIndex(2);
@@ -407,8 +410,7 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
                 reference.getParent().putBooleanProp(Node.FREE_CALL, false);
               }
               // Change reference to GETPROP.
-              reference.getParent().replaceChild(
-                  reference,
+              reference.replaceWith(
                   IR.getprop(IR.name(object.name), IR.string(var.name))
                       .useSourceInfoIfMissingFromForTree(reference));
             }
@@ -442,7 +444,7 @@ public final class Es6RewriteBlockScopedDeclaration extends AbstractPostOrderCal
         } else {
           replacement = call.useSourceInfoIfMissingFromForTree(function);
         }
-        function.getParent().replaceChild(function, replacement);
+        function.replaceWith(replacement);
         returnNode.addChildToFront(function);
       }
     }

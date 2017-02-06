@@ -38,6 +38,7 @@ public final class FunctionNamespace extends Namespace {
   protected JSType computeJSType() {
     Preconditions.checkState(this.namespaceType == null);
     return JSType.fromObjectType(ObjectType.makeObjectType(
+        this.commonTypes,
         this.commonTypes.getFunctionType(),
         null,
         this.scope.getDeclaredFunctionType().toFunctionType(),
@@ -46,7 +47,7 @@ public final class FunctionNamespace extends Namespace {
         ObjectKind.UNRESTRICTED));
   }
 
-  DeclaredTypeRegistry getScope() {
+  public DeclaredTypeRegistry getScope() {
     return this.scope;
   }
 }

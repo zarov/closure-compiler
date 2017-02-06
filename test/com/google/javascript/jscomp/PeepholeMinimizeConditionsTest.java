@@ -80,16 +80,13 @@ public final class PeepholeMinimizeConditionsTest extends CompilerTestCase {
     fold("function f(){if(x){a.foo()}}", "function f(){x&&a.foo()}");
 
     // Try it out with throw/catch/finally [which should not change]
-    fold("function f(){try{foo()}catch(e){bar(e)}finally{baz()}}",
-         "function f(){try{foo()}catch(e){bar(e)}finally{baz()}}");
+    foldSame("function f(){try{foo()}catch(e){bar(e)}finally{baz()}}");
 
     // Try it out with switch statements
-    fold("function f(){switch(x){case 1:break}}",
-         "function f(){switch(x){case 1:break}}");
+    foldSame("function f(){switch(x){case 1:break}}");
 
     // Do while loops stay in a block if that's where they started
-    fold("function f(){if(e1){do foo();while(e2)}else foo2()}",
-         "function f(){if(e1){do foo();while(e2)}else foo2()}");
+    foldSame("function f(){if(e1){do foo();while(e2)}else foo2()}");
     // Test an obscure case with do and while
     fold("if(x){do{foo()}while(y)}else bar()",
          "if(x){do foo();while(y)}else bar()");
@@ -753,8 +750,10 @@ public final class PeepholeMinimizeConditionsTest extends CompilerTestCase {
     enableTypeCheck();
     test("var x = {}; var y = x != null;", "var x = {}; var y = !!x;");
     test("var x = {}; var y = x == null;", "var x = {}; var y = !x;");
-    test("var x = {}; var y = x !== null;", "var x = {}; var y = !!x;");
-    test("var x = {}; var y = x === null;", "var x = {}; var y = !x;");
+    testSame("var x = {}; var y = x !== null;");
+    testSame("var x = undefined; var y = x !== null;");
+    testSame("var x = {}; var y = x === null;");
+    testSame("var x = undefined; var y = x === null;");
 
     test("var x = 1; var y = x != 0;", "var x = 1; var y = !!x;");
     test("var x = 1; var y = x == 0;", "var x = 1; var y = !x;");
@@ -766,12 +765,12 @@ public final class PeepholeMinimizeConditionsTest extends CompilerTestCase {
     enableTypeCheck();
     test("var x = {};\nif (x != null) throw 'a';\n", "var x = {};\nif (x) throw 'a';\n");
     test("var x = {};\nif (x == null) throw 'a';\n", "var x = {};\nif (!x) throw 'a';\n");
-    test("var x = {};\nif (x !== null) throw 'a';\n", "var x = {};\nif (x) throw 'a';\n");
-    test("var x = {};\nif (x === null) throw 'a';\n", "var x = {};\nif (!x) throw 'a';\n");
+    testSame("var x = {};\nif (x !== null) throw 'a';\n");
+    testSame("var x = {};\nif (x === null) throw 'a';\n");
     test("var x = {};\nif (null != x) throw 'a';\n", "var x = {};\nif (x) throw 'a';\n");
     test("var x = {};\nif (null == x) throw 'a';\n", "var x = {};\nif (!x) throw 'a';\n");
-    test("var x = {};\nif (null !== x) throw 'a';\n", "var x = {};\nif (x) throw 'a';\n");
-    test("var x = {};\nif (null === x) throw 'a';\n", "var x = {};\nif (!x) throw 'a';\n");
+    testSame("var x = {};\nif (null !== x) throw 'a';\n");
+    testSame("var x = {};\nif (null === x) throw 'a';\n");
 
     test("var x = 1;\nif (x != 0) throw 'a';\n", "var x = 1;\nif (x) throw 'a';\n");
     test("var x = 1;\nif (x == 0) throw 'a';\n", "var x = 1;\nif (!x) throw 'a';\n");
@@ -816,9 +815,53 @@ public final class PeepholeMinimizeConditionsTest extends CompilerTestCase {
     test(
         "var x = /** @type {?Object} */ ({}); if (x != null) throw 'a';",
         "var x = /** @type {?Object} */ ({}); if (x) throw 'a';");
+    // We back off on strict comparison against null.
+    testSame("var x = /** @type {?Object} */ ({}); if (x !== null) throw 'a';");
+    test(
+        "var x = /** @type {?Object} */ ({}); if (x != undefined) throw 'a';",
+        "var x = /** @type {?Object} */ ({}); if (x) throw 'a';");
+    testSame("var x = /** @type {?Object} */ ({}); if (x !== undefined) throw 'a';");
+    test(
+        "var x = /** @type {!Object|undefined} */ ({}); if (x !== undefined) throw 'a';",
+        "var x = /** @type {!Object|undefined} */ ({}); if (x) throw 'a';");
+    testSame("var x = /** @type {!Object|undefined} */ ({}); if (x !== null) throw 'a';");
     testSame("var x = /** @type {?number} */ (1); if (x != 0) throw 'a';");
     testSame("var x = /** @type {?string} */ (''); if (x != null) throw 'a';");
     testSame("var x = /** @type {?boolean} */ (true); if (x != null) throw 'a';");
+    testSame(LINE_JOINER.join(
+        "/** @enum {string} */",
+        "var E = { F: '1' };",
+        "/** @param {?E} x */",
+        "function f(x) {",
+        "  if (x != null) throw 'a';",
+        "}"));
+    testSame(LINE_JOINER.join(
+        "/** @enum {number} */",
+        "var E1 = { F: 1 };",
+        "/** @enum {number} */",
+        "var E2 = { F: 1 };",
+        "/** @param {?E1|?E2} x */",
+        "function f(x) {",
+        "  if (x != null) throw 'a';",
+        "}"));
+    test(LINE_JOINER.join(
+        "/** @enum {Object} */",
+        "var E = { F: {} };",
+        "/** @param {?E} x */",
+        "function f(x) {",
+        "  if (x != null) throw 'a';",
+        "}"),
+        LINE_JOINER.join(
+        "/** @enum {Object} */",
+        "var E = { F: {} };",
+        "/** @param {?E} x */",
+        "function f(x) {",
+        "  if (x) throw 'a';",
+        "}"));
+    test(
+        "if (/** @type {Array|undefined} */ (window['c']) == null) {}",
+        "if (!/** @type {Array|undefined} */ (window['c'])) {}");
+    testSame("if (/** @type {Array|undefined} */ (window['c']) === null) {}");
   }
 
   public void testCoercionSubstitution_unknownType() {

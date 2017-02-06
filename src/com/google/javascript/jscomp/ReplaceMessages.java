@@ -21,9 +21,7 @@ import com.google.common.base.Preconditions;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.Iterator;
-
 import javax.annotation.Nullable;
 
 /**
@@ -61,8 +59,7 @@ final class ReplaceMessages extends JsMessageVisitor {
     Node replacementNode =
         isSecondMessageTranslated && !isFirstMessageTranslated ?
         callNode.getChildAtIndex(2) : callNode.getSecondChild();
-    callNode.getParent().replaceChild(callNode,
-        replacementNode.detach());
+    callNode.replaceWith(replacementNode.detach());
   }
 
   @Override
@@ -98,7 +95,7 @@ final class ReplaceMessages extends JsMessageVisitor {
 
     if (newValue != msgNode) {
       newValue.useSourceInfoIfMissingFromForTree(msgNode);
-      msgNode.getParent().replaceChild(msgNode, newValue);
+      msgNode.replaceWith(newValue);
       compiler.reportCodeChange();
     }
   }
@@ -200,7 +197,7 @@ final class ReplaceMessages extends JsMessageVisitor {
    * combine the other two types.
    *
    * @param partsIterator  an iterator over message parts
-   * @param argListNode  an LP node whose children are valid placeholder names
+   * @param argListNode  a PARAM_LIST node whose children are valid placeholder names
    * @return the root of the constructed parse tree
    *
    * @throws MalformedException if {@code partsIterator} contains a

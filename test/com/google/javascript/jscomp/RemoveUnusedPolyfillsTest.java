@@ -17,14 +17,14 @@
 package com.google.javascript.jscomp;
 
 /** Unit tests for the RemoveUnusedPolyfills compiler pass. */
-public final class RemoveUnusedPolyfillsTest extends CompilerTestCase {
+public final class RemoveUnusedPolyfillsTest extends TypeICompilerTestCase {
 
   private static final String EXTERNS = LINE_JOINER.join(
+      DEFAULT_EXTERNS,
       // Polyfill
       "var $jscomp = {};",
       "$jscomp.polyfill = function(name, func, from, to) {};",
       // Methods
-      "Function.prototype.call = function(ctx) {};",
       "Array.prototype.includes = function() {};",
       "String.prototype.includes = function() {};",
       "/** @constructor */ function Foo() {}",
@@ -62,12 +62,19 @@ public final class RemoveUnusedPolyfillsTest extends CompilerTestCase {
 
   public RemoveUnusedPolyfillsTest() {
     super(EXTERNS);
-    enableTypeCheck();
   }
 
   @Override
   protected CompilerPass getProcessor(final Compiler compiler) {
     return new RemoveUnusedPolyfills(compiler);
+  }
+
+  @Override
+  protected CompilerOptions getOptions() {
+    CompilerOptions options = super.getOptions();
+    // NTI warns about property accesses on *
+    options.setWarningLevel(DiagnosticGroups.NEW_CHECK_TYPES_EXTRA_CHECKS, CheckLevel.OFF);
+    return options;
   }
 
   public void testRemovesPolyfillInstanceMethods() {
@@ -82,6 +89,14 @@ public final class RemoveUnusedPolyfillsTest extends CompilerTestCase {
         "var x = {}; x.includes = function() {}; x.includes();");
     test(BOTH_INCLUDES + "var x = {includes: function() {}}; x.includes();",
         "var x = {includes: function() {}}; x.includes();");
+
+    // Note: after CollapseProperties, goog.string.includes is goog$string$includes.
+    // Removing it property depends on running after CollapseProperies, since without
+    // it, goog.string looks like {?}, which is an unknown type we can't remove.
+    testSame(STRING_INCLUDES + "var goog = goog || {};"
+        + "goog.string = goog.string || {};"
+        + "goog.string.includes = function() {};"
+        + "goog.string.includes();");
   }
 
   public void testRemovesPolyfillStaticMethods() {
@@ -104,6 +119,8 @@ public final class RemoveUnusedPolyfillsTest extends CompilerTestCase {
   public void testDoesNotRemoveMethodsCalledOnObject() {
     testSame(STRING_INCLUDES + "obj.includes();");
     testSame(BOTH_INCLUDES + "obj.includes();");
+    testSame(ARRAY_INCLUDES
+        + "function f(/** !Object */ x) { x.includes = function() {}; x.includes(); }");
   }
 
   public void testDoesNotRemoveMethodsCalledOnCorrectTypes() {
@@ -117,8 +134,8 @@ public final class RemoveUnusedPolyfillsTest extends CompilerTestCase {
     test(BOTH_INCLUDES + "arr.includes();", ARRAY_INCLUDES + "arr.includes();");
     test(BOTH_INCLUDES + "[].includes();", ARRAY_INCLUDES + "[].includes();");
 
-    test(BOTH_INCLUDES + "strOrArr.includes();", BOTH_INCLUDES + "strOrArr.includes();");
-    test(BOTH_INCLUDES + "strOrMyArray.includes();", BOTH_INCLUDES + "strOrMyArray.includes();");
+    testSame(BOTH_INCLUDES + "strOrArr.includes();");
+    testSame(BOTH_INCLUDES + "strOrMyArray.includes();");
     test(BOTH_INCLUDES + "strOrFoo.includes();", STRING_INCLUDES + "strOrFoo.includes();");
     test(BOTH_INCLUDES + "fooOrMyArray.includes();", ARRAY_INCLUDES + "fooOrMyArray.includes();");
   }

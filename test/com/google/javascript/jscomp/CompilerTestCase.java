@@ -18,6 +18,7 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
+import static com.google.javascript.jscomp.testing.JSErrorSubject.assertError;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
@@ -103,6 +104,8 @@ public abstract class CompilerTestCase extends TestCase {
    */
   private boolean normalizeEnabled = false;
 
+  private boolean polymerPass = false;
+
   /** Whether the tranpilation passes runs before pass being tested. */
   private boolean transpileEnabled = false;
 
@@ -111,6 +114,9 @@ public abstract class CompilerTestCase extends TestCase {
 
   /** Whether we run InferConsts before checking. */
   private boolean enableInferConsts = false;
+
+  /** Whether we run CheckAccessControls after the pass being tested. */
+  private boolean checkAccessControls = false;
 
   /** Whether to check that all line number information is preserved. */
   private boolean checkLineNumbers = true;
@@ -157,13 +163,14 @@ public abstract class CompilerTestCase extends TestCase {
   private String filename = "testcode";
 
   static final String ACTIVE_X_OBJECT_DEF =
-  "/**\n" +
-  " * @param {string} progId\n" +
-  " * @param {string=} opt_location\n" +
-  " * @constructor\n" +
-  " * @see http://msdn.microsoft.com/en-us/library/7sw4ddf8.aspx\n" +
-  " */\n" +
-  "function ActiveXObject(progId, opt_location) {}\n";
+      LINE_JOINER.join(
+          "/**",
+          " * @param {string} progId",
+          " * @param {string=} opt_location",
+          " * @constructor",
+          " * @see http://msdn.microsoft.com/en-us/library/7sw4ddf8.aspx",
+          " */",
+          "function ActiveXObject(progId, opt_location) {}");
 
   /** A default set of externs for testing. */
   public static final String DEFAULT_EXTERNS =
@@ -197,7 +204,7 @@ public abstract class CompilerTestCase extends TestCase {
           "/** @type {?Function} */ Object.prototype.constructor;",
           "Object.defineProperties = function(obj, descriptors) {};",
           "/** @constructor",
-          " * @param {*} var_args */ ",
+          " * @param {...*} var_args */ ",
           "function Function(var_args) {}",
           "/** @type {!Function} */ Function.prototype.apply;",
           "/** @type {!Function} */ Function.prototype.bind;",
@@ -210,13 +217,21 @@ public abstract class CompilerTestCase extends TestCase {
           "function String(arg) {}",
           "/** @param {number} sliceArg */",
           "String.prototype.slice = function(sliceArg) {};",
+          "/**",
+          " * @this {?String|string}",
+          " * @param {?} regex",
+          " * @param {?} str",
+          " * @param {string=} opt_flags",
+          " * @return {string}",
+          " */",
+          "String.prototype.replace = function(regex, str, opt_flags) {};",
           "/** @type {number} */ String.prototype.length;",
           "/**",
           " * @template T",
           " * @constructor ",
           " * @implements {IArrayLike<T>} ",
           " * @implements {Iterable<T>}",
-          " * @param {*} var_args",
+          " * @param {...*} var_args",
           " * @return {!Array.<?>}",
           " */",
           "function Array(var_args) {}",
@@ -237,7 +252,43 @@ public abstract class CompilerTestCase extends TestCase {
           "function Arguments() {}",
           "/** @type {number} */",
           "Arguments.prototype.length;",
+          "/**",
+          " * @constructor",
+          " * @param {*=} opt_pattern",
+          " * @param {*=} opt_flags",
+          " * @return {!RegExp}",
+          " * @nosideeffects",
+          " */",
+          "function RegExp(opt_pattern, opt_flags) {}",
+          "/**",
+          " * @param {*} str The string to search.",
+          " * @return {?Array<string>}",
+          " */",
+          "RegExp.prototype.exec = function(str) {};",
+          "/**",
+          " * @constructor",
+          " */",
+          // TODO(bradfordcsmith): Copy fields for this from es5.js this when we have test cases
+          //     that depend on them.
+          "function ObjectPropertyDescriptor() {}",
+          "/**",
+          " * @param {!Object} obj",
+          " * @param {string} prop",
+          " * @return {!ObjectPropertyDescriptor|undefined}",
+          " * @nosideeffects",
+          " */",
+          "Object.getOwnPropertyDescriptor = function(obj, prop) {};",
+          "/**",
+          " * @param {!Object} obj",
+          " * @param {string} prop",
+          " * @param {!Object} descriptor",
+          " * @return {!Object}",
+          " */",
+          "Object.defineProperty = function(obj, prop, descriptor) {};",
           "/** @type {?} */ var unknown;", // For producing unknowns in tests.
+          "/** @typedef {?} */ var symbol;", // TODO(sdh): remove once primitive 'symbol' supported
+          "/** @constructor */ function Symbol() {}",
+          "/** @const {!symbol} */ Symbol.iterator;",
           ACTIVE_X_OBJECT_DEF);
 
   /**
@@ -378,10 +429,21 @@ public abstract class CompilerTestCase extends TestCase {
   }
 
   /**
+   * Whether to run CheckAccessControls after the pass being tested (and checking types).
+   */
+  protected void enableCheckAccessControls(boolean enable) {
+    this.checkAccessControls = enable;
+  }
+
+  /**
    * Whether to allow externs changes.
    */
   protected void allowExternsChanges(boolean allowExternsChanges) {
     this.allowExternsChanges = allowExternsChanges;
+  }
+
+  public void enablePolymerPass() {
+    polymerPass = true;
   }
 
   /**
@@ -423,7 +485,6 @@ public abstract class CompilerTestCase extends TestCase {
   /**
    * Process closure library primitives.
    */
-  // TODO(nicksantos): Fix other passes to use this when appropriate.
   protected void enableClosurePass() {
     closurePassEnabled = true;
   }
@@ -487,7 +548,6 @@ public abstract class CompilerTestCase extends TestCase {
    *
    * @see MarkNoSideEffectCalls
    */
-  // TODO(nicksantos): This pass doesn't get run anymore. It should be removed.
   void enableMarkNoSideEffects() {
     markNoSideEffects = true;
   }
@@ -594,6 +654,14 @@ public abstract class CompilerTestCase extends TestCase {
   }
 
   /**
+   * Verifies that the compiler generates the given warning for the given input.
+   */
+  public void testWarning(String[] js, DiagnosticType warning) {
+    assertNotNull(warning);
+    test(js, null, null, warning);
+  }
+
+  /**
    * Verifies that the compiler generates the given warning and description for the given input.
    *
    * @param js Input
@@ -610,6 +678,13 @@ public abstract class CompilerTestCase extends TestCase {
    * @param js Input
    */
   public void testNoWarning(String js) {
+    test(js, null, null, null);
+  }
+
+  /**
+   * Verifies that the compiler generates no warnings for the given input.
+   */
+  public void testNoWarning(String[] js) {
     test(js, null, null, null);
   }
 
@@ -783,14 +858,14 @@ public abstract class CompilerTestCase extends TestCase {
   }
 
   /**
-   * Verifies that the compiler pass's JS output matches the expected output,
-   * or that an expected error is encountered.
+   * Verifies that the compiler pass's JS output matches the expected output, or that an expected
+   * error is encountered.
    *
    * @param js Inputs
    * @param expected Expected JS output
    * @param error Expected error, or null if no error is expected
    */
-  public void test(String[] js, String[] expected, DiagnosticType error) {
+  private void test(String[] js, String[] expected, DiagnosticType error) {
     test(js, expected, error, null);
   }
 
@@ -991,20 +1066,6 @@ public abstract class CompilerTestCase extends TestCase {
    * Verifies that the compiler pass's JS output is the same as its input
    * and (optionally) that an expected warning is issued.
    *
-   * @param js Input and output
-   * @param warning Expected warning, or null if no warning is expected
-   * @param description The description of the expected warning,
-   *      or null if no warning is expected or if the warning's description
-   *      should not be examined
-   */
-  public void testSameNoExterns(String js, DiagnosticType warning, String description) {
-    testSame("", js, warning, description, false);
-  }
-
-  /**
-   * Verifies that the compiler pass's JS output is the same as its input
-   * and (optionally) that an expected warning is issued.
-   *
    * @param externs Externs input
    * @param js Input and output
    * @param diag Expected error or warning, or null if none is expected
@@ -1046,7 +1107,7 @@ public abstract class CompilerTestCase extends TestCase {
    * @param error Whether the "type" parameter represents an error.
    *   (false indicated the type is a warning). Ignored if type is null.
    */
-  public void testSame(
+  private void testSame(
       String externs, String js, DiagnosticType type, String description, boolean error) {
     List<SourceFile> externsInputs = ImmutableList.of(SourceFile.fromCode("externs", externs));
     if (error) {
@@ -1179,6 +1240,7 @@ public abstract class CompilerTestCase extends TestCase {
       DiagnosticType error,
       DiagnosticType warning,
       String description) {
+    Preconditions.checkState(!this.typeCheckEnabled || !this.newTypeInferenceEnabled);
     RecentChange recentChange = new RecentChange();
     compiler.addChangeHandler(recentChange);
 
@@ -1203,10 +1265,7 @@ public abstract class CompilerTestCase extends TestCase {
     }
     assertWithMessage("Unexpected parse error(s): " + errorMsg).that(root).isNotNull();
     if (!expectParseWarningsThisTest) {
-      assertEquals(
-          "Unexpected parse warning(s): " + LINE_JOINER.join(compiler.getWarnings()),
-          0,
-          compiler.getWarnings().length);
+      assertThat(compiler.getWarnings()).named("parser warnings").isEmpty();
     } else {
       assertThat(compiler.getWarningCount()).isGreaterThan(0);
     }
@@ -1234,6 +1293,12 @@ public abstract class CompilerTestCase extends TestCase {
         errorManagers[i] = new BlackHoleErrorManager();
         compiler.setErrorManager(errorManagers[i]);
 
+        if (polymerPass && i == 0) {
+          recentChange.reset();
+          new PolymerPass(compiler).process(externsRoot, mainRoot);
+          hasCodeChanged = hasCodeChanged || recentChange.hasCodeChanged();
+        }
+
         if (rewriteClosureCode && i == 0) {
           new ClosureRewriteClass(compiler).process(null, mainRoot);
           new ClosureRewriteModule(compiler, null, null).process(null, mainRoot);
@@ -1246,7 +1311,7 @@ public abstract class CompilerTestCase extends TestCase {
         if (closurePassEnabled && i == 0) {
           recentChange.reset();
           new ProcessClosurePrimitives(compiler, null, CheckLevel.ERROR, false)
-              .process(null, mainRoot);
+              .process(externsRoot, mainRoot);
           hasCodeChanged = hasCodeChanged || recentChange.hasCodeChanged();
         }
 
@@ -1279,9 +1344,11 @@ public abstract class CompilerTestCase extends TestCase {
         }
 
         if (computeSideEffects && i == 0) {
+          recentChange.reset();
           PureFunctionIdentifier.Driver mark =
               new PureFunctionIdentifier.Driver(compiler, null);
           mark.process(externsRoot, mainRoot);
+          hasCodeChanged = hasCodeChanged || recentChange.hasCodeChanged();
         }
 
         if (markNoSideEffects && i == 0) {
@@ -1312,6 +1379,10 @@ public abstract class CompilerTestCase extends TestCase {
           runNewTypeInference(compiler, externsRoot, mainRoot);
         }
 
+        if (checkAccessControls) {
+          (new CheckAccessControls(compiler, false)).process(externsRoot, mainRoot);
+        }
+
         hasCodeChanged = hasCodeChanged || recentChange.hasCodeChanged();
         aggregateWarningCount += errorManagers[i].getWarningCount();
         Collections.addAll(aggregateWarnings, compiler.getWarnings());
@@ -1325,10 +1396,7 @@ public abstract class CompilerTestCase extends TestCase {
     }
 
     if (error == null) {
-      assertEquals(
-          "Unexpected error(s):\n" + LINE_JOINER.join(compiler.getErrors()),
-          0,
-          compiler.getErrorCount());
+      assertThat(compiler.getErrors()).isEmpty();
 
       // Verify the symbol table.
       ErrorManager symbolTableErrorManager = new BlackHoleErrorManager();
@@ -1342,17 +1410,13 @@ public abstract class CompilerTestCase extends TestCase {
       JSError[] stErrors = symbolTableErrorManager.getErrors();
       if (expectedSymbolTableError != null) {
         assertEquals("There should be one error.", 1, stErrors.length);
-        assertThat(stErrors[0].getType()).isEqualTo(expectedSymbolTableError);
+        assertError(stErrors[0]).hasType(expectedSymbolTableError);
       } else {
-        assertEquals(
-            "Unexpected symbol table error(s): " + LINE_JOINER.join(stErrors), 0, stErrors.length);
+        assertThat(stErrors).named("symbol table errors").isEmpty();
       }
 
       if (warning == null) {
-        assertEquals(
-            "Unexpected warning(s): " + LINE_JOINER.join(aggregateWarnings),
-            0,
-            aggregateWarningCount);
+        assertThat(aggregateWarnings).isEmpty();
       } else {
         assertEquals(
             "There should be one warning, repeated "
@@ -1364,7 +1428,7 @@ public abstract class CompilerTestCase extends TestCase {
         for (int i = 0; i < numRepetitions; ++i) {
           JSError[] warnings = errorManagers[i].getWarnings();
           JSError actual = warnings[0];
-          assertThat(actual.getType()).isEqualTo(warning);
+          assertError(actual).hasType(warning);
           validateSourceLocation(actual);
 
           if (description != null) {
@@ -1379,8 +1443,8 @@ public abstract class CompilerTestCase extends TestCase {
         normalizeActualCode(compiler, externsRootClone, mainRootClone);
       }
 
-      boolean codeChange = !mainRootClone.isEquivalentTo(mainRoot);
-      boolean externsChange = !externsRootClone.isEquivalentTo(externsRoot);
+      boolean codeChange = !mainRootClone.isEquivalentWithSideEffectsTo(mainRoot);
+      boolean externsChange = !externsRootClone.isEquivalentWithSideEffectsTo(externsRoot);
 
       // Generally, externs should not be changed by the compiler passes.
       if (externsChange && !allowExternsChanges) {
@@ -1433,7 +1497,7 @@ public abstract class CompilerTestCase extends TestCase {
                   + "\n" + explanation);
             }
           }
-        } else if (expected != null) {
+        } else {
           String[] expectedSources = new String[expected.size()];
           for (int i = 0; i < expected.size(); ++i) {
             try {
@@ -1515,6 +1579,7 @@ public abstract class CompilerTestCase extends TestCase {
     List<PassFactory> factories = new ArrayList<>();
     TranspilationPasses.addEs6EarlyPasses(factories);
     TranspilationPasses.addEs6LatePasses(factories);
+    TranspilationPasses.addRewritePolyfillPass(factories);
     for (PassFactory factory : factories) {
       factory.create(compiler).process(externsRoot, codeRoot);
     }
@@ -1565,7 +1630,8 @@ public abstract class CompilerTestCase extends TestCase {
     }
 
     if (closurePassEnabled && closurePassEnabledForExpected && !compiler.hasErrors()) {
-      new ProcessClosurePrimitives(compiler, null, CheckLevel.ERROR, false).process(null, mainRoot);
+      new ProcessClosurePrimitives(compiler, null, CheckLevel.ERROR, false)
+          .process(externsRoot, mainRoot);
     }
 
     if (rewriteClosureCode) {
@@ -1627,7 +1693,7 @@ public abstract class CompilerTestCase extends TestCase {
       }
 
       // Expected output parsed without implied block.
-      Preconditions.checkState(externs.isBlock());
+      Preconditions.checkState(externs.isRoot());
       Preconditions.checkState(compareJsDoc);
       Preconditions.checkState(
           externs.hasOneChild(), "Compare as tree only works when output has a single script.");

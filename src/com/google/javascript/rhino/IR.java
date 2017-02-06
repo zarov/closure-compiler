@@ -39,7 +39,6 @@
 package com.google.javascript.rhino;
 
 import com.google.common.base.Preconditions;
-
 import java.util.List;
 
 /**
@@ -57,7 +56,7 @@ public class IR {
   public static Node function(Node name, Node params, Node body) {
     Preconditions.checkState(name.isName());
     Preconditions.checkState(params.isParamList());
-    Preconditions.checkState(body.isBlock());
+    Preconditions.checkState(body.isNormalBlock());
     return new Node(Token.FUNCTION, name, params, body);
   }
 
@@ -86,6 +85,15 @@ public class IR {
       paramList.addChildToBack(param);
     }
     return paramList;
+  }
+
+  public static Node root(Node ... rootChildren) {
+    Node root = new Node(Token.ROOT);
+    for (Node child : rootChildren) {
+      Preconditions.checkState(child.getToken() == Token.ROOT || child.getToken() == Token.SCRIPT);
+      root.addChildToBack(child);
+    }
+    return root;
   }
 
   public static Node block() {
@@ -198,6 +206,11 @@ public class IR {
     return new Node(Token.YIELD);
   }
 
+  public static Node await(Node expr) {
+    Preconditions.checkState(mayBeExpression(expr));
+    return new Node(Token.AWAIT, expr);
+  }
+
   public static Node yield(Node expr) {
     Preconditions.checkState(mayBeExpression(expr));
     return new Node(Token.YIELD, expr);
@@ -209,31 +222,31 @@ public class IR {
   }
 
   public static Node exprResult(Node expr) {
-    Preconditions.checkState(mayBeExpression(expr));
+    Preconditions.checkState(mayBeExpression(expr), expr);
     return new Node(Token.EXPR_RESULT, expr);
   }
 
   public static Node ifNode(Node cond, Node then) {
     Preconditions.checkState(mayBeExpression(cond));
-    Preconditions.checkState(then.isBlock());
+    Preconditions.checkState(then.isNormalBlock());
     return new Node(Token.IF, cond, then);
   }
 
   public static Node ifNode(Node cond, Node then, Node elseNode) {
     Preconditions.checkState(mayBeExpression(cond));
-    Preconditions.checkState(then.isBlock());
-    Preconditions.checkState(elseNode.isBlock());
+    Preconditions.checkState(then.isNormalBlock());
+    Preconditions.checkState(elseNode.isNormalBlock());
     return new Node(Token.IF, cond, then, elseNode);
   }
 
   public static Node doNode(Node body, Node cond) {
-    Preconditions.checkState(body.isBlock());
+    Preconditions.checkState(body.isNormalBlock());
     Preconditions.checkState(mayBeExpression(cond));
     return new Node(Token.DO, body, cond);
   }
 
   public static Node whileNode(Node cond, Node body) {
-    Preconditions.checkState(body.isBlock());
+    Preconditions.checkState(body.isNormalBlock());
     Preconditions.checkState(mayBeExpression(cond));
     return new Node(Token.WHILE, cond, body);
   }
@@ -241,15 +254,15 @@ public class IR {
   public static Node forIn(Node target, Node cond, Node body) {
     Preconditions.checkState(target.isVar() || mayBeExpression(target));
     Preconditions.checkState(mayBeExpression(cond));
-    Preconditions.checkState(body.isBlock());
-    return new Node(Token.FOR, target, cond, body);
+    Preconditions.checkState(body.isNormalBlock());
+    return new Node(Token.FOR_IN, target, cond, body);
   }
 
   public static Node forNode(Node init, Node cond, Node incr, Node body) {
     Preconditions.checkState(init.isVar() || mayBeExpressionOrEmpty(init));
     Preconditions.checkState(mayBeExpressionOrEmpty(cond));
     Preconditions.checkState(mayBeExpressionOrEmpty(incr));
-    Preconditions.checkState(body.isBlock());
+    Preconditions.checkState(body.isNormalBlock());
     return new Node(Token.FOR, init, cond, incr, body);
   }
 
@@ -265,14 +278,14 @@ public class IR {
 
   public static Node caseNode(Node expr, Node body) {
     Preconditions.checkState(mayBeExpression(expr));
-    Preconditions.checkState(body.isBlock());
-    body.putBooleanProp(Node.SYNTHETIC_BLOCK_PROP, true);
+    Preconditions.checkState(body.isNormalBlock());
+    body.setIsAddedBlock(true);
     return new Node(Token.CASE, expr, body);
   }
 
   public static Node defaultCase(Node body) {
-    Preconditions.checkState(body.isBlock());
-    body.putBooleanProp(Node.SYNTHETIC_BLOCK_PROP, true);
+    Preconditions.checkState(body.isNormalBlock());
+    body.setIsAddedBlock(true);
     return new Node(Token.DEFAULT_CASE, body);
   }
 
@@ -290,14 +303,14 @@ public class IR {
   }
 
   public static Node tryFinally(Node tryBody, Node finallyBody) {
-    Preconditions.checkState(tryBody.isBlock());
-    Preconditions.checkState(finallyBody.isBlock());
+    Preconditions.checkState(tryBody.isNormalBlock());
+    Preconditions.checkState(finallyBody.isNormalBlock());
     Node catchBody = block().useSourceInfoIfMissingFrom(tryBody);
     return new Node(Token.TRY, tryBody, catchBody, finallyBody);
   }
 
   public static Node tryCatch(Node tryBody, Node catchNode) {
-    Preconditions.checkState(tryBody.isBlock());
+    Preconditions.checkState(tryBody.isNormalBlock());
     Preconditions.checkState(catchNode.isCatch());
     Node catchBody = blockUnchecked(catchNode).useSourceInfoIfMissingFrom(catchNode);
     return new Node(Token.TRY, tryBody, catchBody);
@@ -305,7 +318,7 @@ public class IR {
 
   public static Node tryCatchFinally(
       Node tryBody, Node catchNode, Node finallyBody) {
-    Preconditions.checkState(finallyBody.isBlock());
+    Preconditions.checkState(finallyBody.isNormalBlock());
     Node tryNode = tryCatch(tryBody, catchNode);
     tryNode.addChildToBack(finallyBody);
     return tryNode;
@@ -313,7 +326,7 @@ public class IR {
 
   public static Node catchNode(Node expr, Node body) {
     Preconditions.checkState(expr.isName());
-    Preconditions.checkState(body.isBlock());
+    Preconditions.checkState(body.isNormalBlock());
     return new Node(Token.CATCH, expr, body);
   }
 
@@ -357,7 +370,7 @@ public class IR {
 
   public static Node name(String name) {
     Preconditions.checkState(name.indexOf('.') == -1,
-        "Invalid name. Did you mean to use NodeUtil.newQName?");
+        "Invalid name '%s'. Did you mean to use NodeUtil.newQName?", name);
     return Node.newString(Token.NAME, name);
   }
 

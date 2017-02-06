@@ -19,7 +19,6 @@ import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.jscomp.PolymerPass.MemberDefinition;
 import com.google.javascript.rhino.JSDocInfoBuilder;
 import com.google.javascript.rhino.Node;
-
 import java.util.List;
 
 /**
@@ -56,7 +55,7 @@ final class PolymerPassSuppressBehaviors extends AbstractPostOrderCallback {
   }
 
   /**
-   * Strip property type annotations and add suppress checkTypes and globalThis on functions.
+   * Strip property type annotations and add suppressions on functions.
    */
   private void suppressBehavior(Node behaviorValue) {
     if (behaviorValue == null) {
@@ -81,15 +80,17 @@ final class PolymerPassSuppressBehaviors extends AbstractPostOrderCallback {
     return value.getJSDocInfo() != null && value.getJSDocInfo().isPolymerBehavior();
   }
 
-  private static void stripPropertyTypes(Node behaviorValue) {
-    List<MemberDefinition> properties = PolymerPassStaticUtils.extractProperties(behaviorValue);
+  private void stripPropertyTypes(Node behaviorValue) {
+    List<MemberDefinition> properties =
+        PolymerPassStaticUtils.extractProperties(behaviorValue, compiler);
     for (MemberDefinition property : properties) {
       property.name.removeProp(Node.JSDOC_INFO_PROP);
     }
   }
 
-  private static void suppressDefaultValues(Node behaviorValue) {
-    for (MemberDefinition property : PolymerPassStaticUtils.extractProperties(behaviorValue)) {
+  private void suppressDefaultValues(Node behaviorValue) {
+    for (MemberDefinition property :
+        PolymerPassStaticUtils.extractProperties(behaviorValue, compiler)) {
       if (!property.value.isObjectLit()) {
         continue;
       }
@@ -103,17 +104,19 @@ final class PolymerPassSuppressBehaviors extends AbstractPostOrderCallback {
           JSDocInfoBuilder.maybeCopyFrom(defaultValueKey.getJSDocInfo());
       suppressDoc.addSuppression("checkTypes");
       suppressDoc.addSuppression("globalThis");
+      suppressDoc.addSuppression("visibility");
       defaultValueKey.setJSDocInfo(suppressDoc.build());
     }
   }
 
-  private static void addBehaviorSuppressions(Node behaviorValue) {
+  private void addBehaviorSuppressions(Node behaviorValue) {
     for (Node keyNode : behaviorValue.children()) {
       if (keyNode.getFirstChild().isFunction()) {
         keyNode.removeProp(Node.JSDOC_INFO_PROP);
         JSDocInfoBuilder suppressDoc = new JSDocInfoBuilder(true);
         suppressDoc.addSuppression("checkTypes");
         suppressDoc.addSuppression("globalThis");
+        suppressDoc.addSuppression("visibility");
         keyNode.setJSDocInfo(suppressDoc.build());
       }
     }

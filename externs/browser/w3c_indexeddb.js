@@ -25,19 +25,19 @@
  * @author guido.tapia@picnet.com.au (Guido Tapia)
  */
 
-/** @type {IDBFactory} */
+/** @type {!IDBFactory|undefined} */
 Window.prototype.moz_indexedDB;
 
-/** @type {IDBFactory} */
+/** @type {!IDBFactory|undefined} */
 Window.prototype.mozIndexedDB;
 
-/** @type {IDBFactory} */
+/** @type {!IDBFactory|undefined} */
 Window.prototype.webkitIndexedDB;
 
-/** @type {IDBFactory} */
+/** @type {!IDBFactory|undefined} */
 Window.prototype.msIndexedDB;
 
-/** @type {IDBFactory} */
+/** @type {!IDBFactory|undefined} */
 Window.prototype.indexedDB;
 
 /**
@@ -392,7 +392,8 @@ IDBDatabase.prototype.deleteObjectStore = function(name) {};
 IDBDatabase.prototype.setVersion = function(version) {};
 
 /**
- * @param {Array<string>} storeNames The stores to open in this transaction.
+ * @param {string|Array<string>} storeNames The stores to open in this
+ *     transaction.
  * @param {(number|string)=} mode The mode for opening the object stores.
  * @return {!IDBTransaction} The IDBRequest object.
  */

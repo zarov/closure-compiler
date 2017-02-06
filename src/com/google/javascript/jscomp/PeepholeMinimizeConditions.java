@@ -97,10 +97,8 @@ class PeepholeMinimizeConditions
         return node;
 
       case FOR:
-        if (!NodeUtil.isForIn(node)) {
-          tryJoinForCondition(node);
-          tryMinimizeCondition(NodeUtil.getConditionExpression(node));
-        }
+        tryJoinForCondition(node);
+        tryMinimizeCondition(NodeUtil.getConditionExpression(node));
         return node;
 
       case BLOCK:
@@ -313,7 +311,7 @@ class PeepholeMinimizeConditions
     // end of a function. This means a break is same as return.
     if (follow == null || areMatchingExits(n, follow)) {
       Node replacement = IR.breakNode();
-      n.getParent().replaceChild(n, replacement);
+      n.replaceWith(replacement);
       this.reportCodeChange();
       return replacement;
     }
@@ -438,7 +436,7 @@ class PeepholeMinimizeConditions
         return n;
     }
     Node newOperator = n.removeFirstChild();
-    newOperator.setType(complementOperator);
+    newOperator.setToken(complementOperator);
     parent.replaceChild(n, newOperator);
     reportCodeChange();
     return newOperator;
@@ -807,14 +805,14 @@ class PeepholeMinimizeConditions
    *     an expression.
    */
   private static boolean isFoldableExpressBlock(Node n) {
-    if (n.isBlock()) {
+    if (n.isNormalBlock()) {
       if (n.hasOneChild()) {
         Node maybeExpr = n.getFirstChild();
         if (maybeExpr.isExprResult()) {
           // IE has a bug where event handlers behave differently when
           // their return value is used vs. when their return value is in
           // an EXPR_RESULT. It's pretty freaking weird. See:
-          // http://code.google.com/p/closure-compiler/issues/detail?id=291
+          // http://blickly.github.io/closure-compiler-issues/#291
           // We try to detect this case, and not fold EXPR_RESULTs
           // into other expressions.
           if (maybeExpr.getFirstChild().isCall()) {
@@ -852,7 +850,7 @@ class PeepholeMinimizeConditions
    *     an return with or without an expression.
    */
   private static boolean isReturnBlock(Node n) {
-    if (n.isBlock()) {
+    if (n.isNormalBlock()) {
       if (n.hasOneChild()) {
         Node first = n.getFirstChild();
         return first.isReturn();
@@ -867,7 +865,7 @@ class PeepholeMinimizeConditions
    *     an return.
    */
   private static boolean isReturnExpressBlock(Node n) {
-    if (n.isBlock()) {
+    if (n.isNormalBlock()) {
       if (n.hasOneChild()) {
         Node first = n.getFirstChild();
         if (first.isReturn()) {
@@ -902,7 +900,7 @@ class PeepholeMinimizeConditions
    *     a VAR declaration of a single variable.
    */
   private static boolean isVarBlock(Node n) {
-    if (n.isBlock()) {
+    if (n.isNormalBlock()) {
       if (n.hasOneChild()) {
         Node first = n.getFirstChild();
         if (first.isVar()) {
@@ -947,6 +945,7 @@ class PeepholeMinimizeConditions
         case WITH:
         case WHILE:
         case FOR:
+        case FOR_IN:
           n = n.getLastChild();
           continue;
         default:
@@ -1036,15 +1035,14 @@ class PeepholeMinimizeConditions
       return n;
     }
 
+    Token op = n.getToken();
     Preconditions.checkArgument(
-        n.getToken() == Token.EQ
-            || n.getToken() == Token.NE
-            || n.getToken() == Token.SHEQ
-            || n.getToken() == Token.SHNE);
+        op == Token.EQ || op == Token.NE || op == Token.SHEQ || op == Token.SHNE);
 
     Node left = n.getFirstChild();
     Node right = n.getLastChild();
-    BooleanCoercability booleanCoercability = canConvertComparisonToBooleanCoercion(left, right);
+    BooleanCoercability booleanCoercability =
+        canConvertComparisonToBooleanCoercion(left, right, op);
     if (booleanCoercability != BooleanCoercability.NONE) {
       n.detachChildren();
       Node objExpression = booleanCoercability == BooleanCoercability.LEFT ? left : right;
@@ -1054,7 +1052,7 @@ class PeepholeMinimizeConditions
       } else {
         replacement = booleanResult ? IR.not(IR.not(objExpression)) : objExpression;
       }
-      n.getParent().replaceChild(n, replacement);
+      n.replaceWith(replacement);
       reportCodeChange();
       return replacement;
     }
@@ -1073,22 +1071,36 @@ class PeepholeMinimizeConditions
     RIGHT
   }
 
-  private static BooleanCoercability canConvertComparisonToBooleanCoercion(Node left, Node right) {
-    // Convert null check of an object to coercion.
-    boolean leftIsNull = NodeUtil.isNullOrUndefined(left);
-    boolean rightIsNull = NodeUtil.isNullOrUndefined(right);
+  private static BooleanCoercability canConvertComparisonToBooleanCoercion(
+      Node left, Node right, Token op) {
+    // Convert null or undefined check of an object to coercion.
+    boolean leftIsNull = left.isNull();
+    boolean rightIsNull = right.isNull();
+    boolean leftIsUndefined = NodeUtil.isUndefined(left);
+    boolean rightIsUndefined = NodeUtil.isUndefined(right);
+    boolean leftIsNullOrUndefined = leftIsNull || leftIsUndefined;
+    boolean rightIsNullOrUndefined = rightIsNull || rightIsUndefined;
+
     boolean leftIsObjectType = isObjectType(left);
     boolean rightIsObjectType = isObjectType(right);
-    if (leftIsObjectType && rightIsNull || rightIsObjectType && leftIsNull) {
-      return leftIsNull ? BooleanCoercability.RIGHT : BooleanCoercability.LEFT;
+    if (op == Token.SHEQ || op == Token.SHNE) {
+      if ((leftIsObjectType && !left.getJSType().isNullable() && rightIsUndefined)
+          || (rightIsObjectType && !right.getJSType().isNullable() && leftIsUndefined)) {
+        return leftIsNullOrUndefined ? BooleanCoercability.RIGHT : BooleanCoercability.LEFT;
+      }
+    } else {
+      if ((leftIsObjectType && rightIsNullOrUndefined)
+          || (rightIsObjectType && leftIsNullOrUndefined)) {
+        return leftIsNullOrUndefined ? BooleanCoercability.RIGHT : BooleanCoercability.LEFT;
+      }
     }
 
     // Convert comparing a number to zero with coercion.
-    boolean leftIsZero = left.isNumber() && left.getDouble() == 0;
-    boolean rightIsZero = right.isNumber() && right.getDouble() == 0;
+    boolean leftIsZero = (left.isNumber() && left.getDouble() == 0);
+    boolean rightIsZero = (right.isNumber() && right.getDouble() == 0);
     boolean leftIsNumberType = isNumberType(left);
     boolean rightIsNumberType = isNumberType(right);
-    if (leftIsNumberType && rightIsZero || rightIsNumberType && leftIsZero) {
+    if ((leftIsNumberType && rightIsZero) || (rightIsNumberType && leftIsZero)) {
       return leftIsZero ? BooleanCoercability.RIGHT : BooleanCoercability.LEFT;
     }
 
@@ -1178,8 +1190,7 @@ class PeepholeMinimizeConditions
 
           // (x || FALSE) => x
           // (x && TRUE) => x
-          if (type == Token.OR && !rval ||
-              type == Token.AND && rval) {
+          if ((type == Token.OR && !rval) || (type == Token.AND && rval)) {
             replacement = left;
           } else if (!mayHaveSideEffects(left)) {
             replacement = right;

@@ -24,7 +24,6 @@ import com.google.javascript.jscomp.ReferenceCollectingCallback.ReferenceCollect
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
@@ -227,6 +226,7 @@ class CrossModuleCodeMotion implements CompilerPass {
       switch (ancestor.getToken()) {
         case DO:
         case FOR:
+        case FOR_IN:
         case HOOK:
         case IF:
         case SWITCH:
@@ -303,14 +303,14 @@ class CrossModuleCodeMotion implements CompilerPass {
   private void collectReferences(Node root) {
     ReferenceCollectingCallback collector = new ReferenceCollectingCallback(
         compiler, ReferenceCollectingCallback.DO_NOTHING_BEHAVIOR,
+        new Es6SyntacticScopeCreator(compiler),
         new Predicate<Var>() {
           @Override public boolean apply(Var var) {
             // Only collect global and non-exported names.
-            return var.isGlobal() &&
-                !compiler.getCodingConvention().isExported(var.getName());
+            return var.isGlobal() && !compiler.getCodingConvention().isExported(var.getName());
           }
         });
-    NodeTraversal.traverseEs6(compiler, root, collector);
+    collector.process(root);
 
     for (Var v : collector.getAllSymbols()) {
       NamedInfo info = getNamedInfo(v);
@@ -319,14 +319,18 @@ class CrossModuleCodeMotion implements CompilerPass {
       }
       ReferenceCollection refCollection = collector.getReferences(v);
       for (Reference ref : refCollection) {
-        processReference(collector, ref, info);
+        processReference(collector, ref, info, v);
       }
     }
   }
 
   private void processReference(
-      ReferenceCollectingCallback collector, Reference ref, NamedInfo info) {
+      ReferenceCollectingCallback collector, Reference ref, NamedInfo info, Var v) {
     Node n = ref.getNode();
+    if (isRecursiveDeclaration(v, n)) {
+      return;
+    }
+
     Node parent = n.getParent();
     if (maybeProcessDeclaration(collector, ref, info)) {
       // Check to see if the declaration is conditional starting at the
@@ -346,6 +350,21 @@ class CrossModuleCodeMotion implements CompilerPass {
         processRead(ref, info);
       }
     }
+  }
+
+  /**
+   * @param variable a variable which may be movable
+   * @param referenceNode a node which is a reference to 'variable'
+   * @return whether the reference to the variable is a recursive declaration
+   *     e.g. function foo() { foo = function() {}; }
+   */
+  private boolean isRecursiveDeclaration(Var variable, Node referenceNode) {
+    if (!referenceNode.getParent().isAssign()) {
+      return false;
+    }
+    Node enclosingFunction = NodeUtil.getEnclosingFunction(referenceNode);
+    return enclosingFunction != null
+      && variable.getName().equals(NodeUtil.getNearestFunctionName(enclosingFunction));
   }
 
   private JSModule getModule(Reference ref) {
@@ -511,7 +530,7 @@ class CrossModuleCodeMotion implements CompilerPass {
       // "('undefined' != typeof Bar && foo instanceof Bar)"
       Node reference = n.getLastChild().cloneNode();
       Preconditions.checkState(reference.isName());
-      n.getParent().replaceChild(n, tmp);
+      n.replaceWith(tmp);
       Node and = IR.and(
           new Node(Token.NE,
               IR.string("undefined"),
@@ -520,7 +539,7 @@ class CrossModuleCodeMotion implements CompilerPass {
           n
       );
       and.useSourceInfoIfMissingFromForTree(n);
-      tmp.getParent().replaceChild(tmp, and);
+      tmp.replaceWith(and);
       compiler.reportCodeChange();
     }
   }

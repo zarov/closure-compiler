@@ -64,6 +64,7 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -148,6 +149,23 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
   private final Map<String, UnionTypeBuilder> typesIndexedByProperty =
        new HashMap<>();
 
+  private JSType sentinelObjectLiteral;
+  private boolean optimizePropertyIndex = false;
+
+  // To avoid blowing up the size of typesIndexedByProperty, we use the sentinel object
+  // literal instead of registering arbitrarily many types.
+  // But because of the way unions are constructed, some properties of record types in unions
+  // are getting dropped and cause spurious "non-existent property" warnings.
+  // The next two fields avoid the warnings. The first field contains property names of records
+  // that participate in unions, and have caused properties to be dropped.
+  // The second field contains the names of the dropped properties. When checking
+  // canPropertyBeDefined, if the type has a property in propertiesOfSupertypesInUnions, we
+  // consider it to possibly have any property in droppedPropertiesOfUnions. This is a loose
+  // check, but we restrict it to records that may be present in unions, and it allows us to
+  // keep typesIndexedByProperty small.
+  private final Set<String> propertiesOfSupertypesInUnions = new HashSet<>();
+  private final Set<String> droppedPropertiesOfUnions = new HashSet<>();
+
   // A map of properties to each reference type on which those
   // properties have been declared. Each type has a unique name used
   // for de-duping.
@@ -192,6 +210,17 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
     nativeTypes = new JSType[JSTypeNative.values().length];
     namesToTypes = new HashMap<>();
     resetForTypeCheck();
+  }
+
+  private JSType getSentinelObjectLiteral() {
+    if (this.sentinelObjectLiteral == null) {
+      this.sentinelObjectLiteral = createAnonymousObjectType(null);
+    }
+    return this.sentinelObjectLiteral;
+  }
+
+  public void setOptimizePropertyIndex_TRANSITIONAL_METHOD(boolean optimizePropIndex) {
+    this.optimizePropertyIndex = optimizePropIndex;
   }
 
   /**
@@ -702,6 +731,36 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
     nativeTypes[typeId.ordinal()] = type;
   }
 
+  // When t is an object that is not the prototype of some class,
+  // and its nominal type is Object, and it has some properties,
+  // we don't need to store these properties in the propertyIndex separately.
+  private static boolean isObjectLiteralThatCanBeSkipped(JSType t) {
+    t = t.restrictByNotNullOrUndefined();
+    // Inline-record type declaration
+    if (t.toMaybeRecordType() != null) {
+      return true;
+    }
+    // Type of an object-literal value
+    else if (t instanceof PrototypeObjectType) {
+      PrototypeObjectType tObj = (PrototypeObjectType) t;
+      return tObj.isAnonymous();
+    }
+    return false;
+  }
+
+  void registerDroppedPropertiesInUnion(RecordType subtype, RecordType supertype) {
+    boolean foundDroppedProperty = false;
+    for (String pname : subtype.getPropertyMap().getOwnPropertyNames()) {
+      if (!supertype.hasProperty(pname)) {
+        foundDroppedProperty = true;
+        this.droppedPropertiesOfUnions.add(pname);
+      }
+    }
+    if (foundDroppedProperty) {
+      this.propertiesOfSupertypesInUnions.addAll(supertype.getPropertyMap().getOwnPropertyNames());
+    }
+  }
+
   /**
    * Tells the type system that {@code owner} may have a property named
    * {@code propertyName}. This allows the registry to keep track of what
@@ -719,6 +778,10 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
     if (typeSet == null) {
       typeSet = new UnionTypeBuilder(this, PROPERTY_CHECKING_UNION_SIZE);
       typesIndexedByProperty.put(propertyName, typeSet);
+    }
+
+    if (this.optimizePropertyIndex && isObjectLiteralThatCanBeSkipped(type)) {
+      type = getSentinelObjectLiteral();
     }
 
     typeSet.addAlternate(type);
@@ -772,12 +835,13 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
    */
   public JSType getGreatestSubtypeWithProperty(
       JSType type, String propertyName) {
-    if (greatestSubtypeByProperty.containsKey(propertyName)) {
-      return greatestSubtypeByProperty.get(propertyName)
-          .getGreatestSubtype(type);
+    JSType withProperty = greatestSubtypeByProperty.get(propertyName);
+    if (withProperty != null) {
+      return withProperty.getGreatestSubtype(type);
     }
-    if (typesIndexedByProperty.containsKey(propertyName)) {
-      JSType built = typesIndexedByProperty.get(propertyName).build();
+    UnionTypeBuilder typesWithProp = typesIndexedByProperty.get(propertyName);
+    if (typesWithProp != null) {
+      JSType built = typesWithProp.build();
       greatestSubtypeByProperty.put(propertyName, built);
       return built.getGreatestSubtype(type);
     }
@@ -813,6 +877,17 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
             return true;
           }
         }
+      }
+      if (type.toMaybeRecordType() != null) {
+        RecordType rec = type.toMaybeRecordType();
+        boolean mayBeInUnion = false;
+        for (String pname : rec.getPropertyMap().getOwnPropertyNames()) {
+          if (this.propertiesOfSupertypesInUnions.contains(pname)) {
+            mayBeInUnion = true;
+            break;
+          }
+        }
+        return mayBeInUnion && this.droppedPropertiesOfUnions.contains(propertyName);
       }
     }
     return false;
@@ -958,10 +1033,21 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
     }
 
     // The best type name is the actual type name.
-    if (type.isFunctionPrototypeType()
-        || (type.toObjectType() != null
-            && type.toObjectType().getConstructor() != null)) {
+    if (type.isFunctionPrototypeType()) {
       return type.toString();
+    }
+
+    if (type.toObjectType() != null && type.toObjectType().getConstructor() != null) {
+      Node source = type.toObjectType().getConstructor().getSource();
+      if (source == null) {
+        return type.toString();
+      }
+      Preconditions.checkState(source.isFunction(), source);
+      String readable = source.getFirstChild().getOriginalName();
+      if (readable == null) {
+        return type.toString();
+      }
+      return readable;
     }
 
     // If we're analyzing a GETPROP, the property may be inherited by the
@@ -1442,8 +1528,8 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
    * Creates a constructor function type.
    *
    * @param name the function's name or {@code null} to indicate that the function is anonymous.
-   * @param source the node defining this function. Its type ({@link Node#getType()}) must be {@link
-   *     Token#FUNCTION}.
+   * @param source the node defining this function. Its type ({@link Node#getToken()} ()}) must be
+   *     {@link Token#FUNCTION}.
    * @param parameters the function's parameters or {@code null} to indicate that the parameter
    *     types are unknown.
    * @param returnType the function's return type or {@code null} to indicate that the return type
@@ -1473,13 +1559,14 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
 
   /**
    * Creates an interface function type.
+   *
    * @param name the function's name
-   * @param source the node defining this function. Its type
-   *     ({@link Node#getType()}) must be {@link Token#FUNCTION}.
+   * @param source the node defining this function. Its type ({@link Node#getToken()}) must be
+   *     {@link Token#FUNCTION}.
    * @param templateKeys the templatized types for the interface.
    */
-  public FunctionType createInterfaceType(String name, Node source,
-      ImmutableList<TemplateType> templateKeys, boolean struct) {
+  public FunctionType createInterfaceType(
+      String name, Node source, ImmutableList<TemplateType> templateKeys, boolean struct) {
     FunctionType fn = FunctionType.forInterface(this, name, source,
         createTemplateTypeMap(templateKeys, null));
     if (struct) {
@@ -1655,30 +1742,28 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
       // TODO(martinprobst): The new type syntax resolution should be separate.
       // Remove the NAME case then.
       case NAME:
-        JSType namedType = getType(scope, n.getString(), sourceName,
-            n.getLineno(), n.getCharno());
-        if ((namedType instanceof ObjectType) &&
-            !(namedType instanceof NamespaceType) &&
-            !(nonNullableTypeNames.contains(n.getString()))) {
+        JSType namedType = getType(scope, n.getString(), sourceName, n.getLineno(), n.getCharno());
+        if ((namedType instanceof ObjectType)
+            && !(namedType instanceof NamespaceType)
+            && !(nonNullableTypeNames.contains(n.getString()))) {
           Node typeList = n.getFirstChild();
-          int nAllowedTypes = namedType.getTemplateTypeMap().numUnfilledTemplateKeys();
           if (!namedType.isUnknownType() && typeList != null) {
             // Templatized types.
-            ImmutableList.Builder<JSType> templateTypes =
-                ImmutableList.builder();
+            ImmutableList.Builder<JSType> templateTypes = ImmutableList.builder();
 
-            // Special case for Object, where Object.<X> implies Object.<?,X>.
+            // Special case for Object, where Object<X> implies Object<?,X>.
             if ((n.getString().equals("Object") || n.getString().equals("window.Object"))
-                && typeList.getFirstChild() == typeList.getLastChild()) {
+                && typeList.hasZeroOrOneChild()) {
               templateTypes.add(getNativeType(UNKNOWN_TYPE));
             }
 
+            int nAllowedTypes = namedType.getTemplateTypeMap().numUnfilledTemplateKeys();
             int templateNodeIndex = 0;
-            for (Node templateNode : typeList.getFirstChild().siblings()) {
+            for (Node templateNode : typeList.children()) {
               // Don't parse more templatized type nodes than the type can
               // accommodate. This is because some existing clients have
               // template annotations on non-templatized classes, for instance:
-              //   goog.structs.Set.<SomeType>
+              //   goog.structs.Set<SomeType>
               // The problem in these cases is that the previously-unparsed
               // SomeType is not actually a valid type. To prevent these clients
               // from seeing unknown type errors, we explicitly don't parse
@@ -1691,11 +1776,9 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
                     sourceName, templateNode.getLineno(), templateNode.getCharno());
                 break;
               }
-              templateTypes.add(createFromTypeNodesInternal(
-                  templateNode, sourceName, scope));
+              templateTypes.add(createFromTypeNodesInternal(templateNode, sourceName, scope));
             }
-            namedType = createTemplatizedType(
-                (ObjectType) namedType, templateTypes.build());
+            namedType = createTemplatizedType((ObjectType) namedType, templateTypes.build());
             Preconditions.checkNotNull(namedType);
           }
           return createDefaultObjectUnion(namedType);
@@ -1707,7 +1790,7 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
         JSType thisType = null;
         boolean isConstructor = false;
         Node current = n.getFirstChild();
-        if (current.getToken() == Token.THIS || current.getToken() == Token.NEW) {
+        if (current.isThis() || current.isNew()) {
           Node contextNode = current.getFirstChild();
 
           JSType candidateThisType = createFromTypeNodesInternal(
@@ -1719,9 +1802,9 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
           if (candidateThisType.isNullType() ||
               candidateThisType.isVoidType()) {
             thisType = candidateThisType;
-          } else if (current.getToken() == Token.THIS) {
+          } else if (current.isThis()) {
             thisType = candidateThisType.restrictByNotNullOrUndefined();
-          } else if (current.getToken() == Token.NEW) {
+          } else if (current.isNew()) {
             thisType = ObjectType.cast(
                 candidateThisType.restrictByNotNullOrUndefined());
             if (thisType == null) {
@@ -1854,25 +1937,10 @@ public class JSTypeRegistry implements TypeIRegistry, Serializable {
     templateTypes.clear();
   }
 
-  private boolean isNonNullable(JSType type) {
-    // TODO(lpino): Verify that nonNullableTypeNames is correct
-    for (String s : nonNullableTypeNames) {
-      JSType that = getType(s);
-      if (that != null && type.isEquivalentTo(that)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   /**
-   * Checks whether the input type can be templatized. It must be an
-   * {@code Object} type which is not a {@code NamespaceType} and is not a
-   * non-nullable type.
+   * @return Whether the type can be provided type arguements.
    */
   public boolean isTemplatizable(JSType type) {
-    return (type instanceof ObjectType)
-        && !(type instanceof NamespaceType)
-        && !isNonNullable(type);
+    return type.getTemplateTypeMap().hasUnfilledTemplateKeys();
   }
 }

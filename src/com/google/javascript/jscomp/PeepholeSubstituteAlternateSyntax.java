@@ -23,7 +23,6 @@ import com.google.javascript.jscomp.CodingConvention.Bind;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.regex.Pattern;
 
 /**
@@ -172,7 +171,7 @@ class PeepholeSubstituteAlternateSyntax
       Node third = rhs.getLastChild().detach();
       Node newLhs = new Node(n.getToken(), first, second).useSourceInfoIfMissingFrom(n);
       Node newRoot = new Node(rhs.getToken(), newLhs, third).useSourceInfoIfMissingFrom(rhs);
-      n.getParent().replaceChild(n, newRoot);
+      n.replaceWith(newRoot);
       reportCodeChange();
       return newRoot;
     } else if (NodeUtil.isCommutative(n.getToken()) && !NodeUtil.mayHaveSideEffects(n)) {
@@ -186,7 +185,7 @@ class PeepholeSubstituteAlternateSyntax
       int rhsPrecedence = NodeUtil.precedence(rhs.getToken());
       if (rhsPrecedence == precedence && lhsPrecedence != precedence) {
         n.removeChild(rhs);
-        lhs.getParent().replaceChild(lhs, rhs);
+        lhs.replaceWith(rhs);
         n.addChildToBack(lhs);
         reportCodeChange();
         return n;
@@ -203,48 +202,47 @@ class PeepholeSubstituteAlternateSyntax
     }
     String targetName = callTarget.getString();
     switch (targetName) {
-      case "Boolean": {
-        // Fold Boolean(a) to !!a
-        // http://www.ecma-international.org/ecma-262/6.0/index.html#sec-boolean-constructor-boolean-value
-        // and
-        // http://www.ecma-international.org/ecma-262/6.0/index.html#sec-logical-not-operator-runtime-semantics-evaluation
-        int paramCount = n.getChildCount() - 1;
-        // only handle the single known parameter case
-        if (paramCount == 1) {
-          Node value = n.getLastChild().detach();
-          Node replacement;
-          if (NodeUtil.isBooleanResult(value)) {
-            // If it is already a boolean do nothing.
-            replacement = value;
-          } else {
-            // Replace it with a "!!value"
-            replacement = IR.not(IR.not(value).srcref(n));
+      case "Boolean":
+        {
+          // Fold Boolean(a) to !!a
+          // http://www.ecma-international.org/ecma-262/6.0/index.html#sec-boolean-constructor-boolean-value
+          // and
+          // http://www.ecma-international.org/ecma-262/6.0/index.html#sec-logical-not-operator-runtime-semantics-evaluation
+          int paramCount = n.getChildCount() - 1;
+          // only handle the single known parameter case
+          if (paramCount == 1) {
+            Node value = n.getLastChild().detach();
+            Node replacement;
+            if (NodeUtil.isBooleanResult(value)) {
+              // If it is already a boolean do nothing.
+              replacement = value;
+            } else {
+              // Replace it with a "!!value"
+              replacement = IR.not(IR.not(value).srcref(n));
+            }
+            n.replaceWith(replacement);
+            reportCodeChange();
           }
-          n.getParent().replaceChild(n, replacement);
-          reportCodeChange();
+          break;
         }
-        break;
-      }
 
-      case "String": {
-        // Fold String(a) to '' + (a) on immutable literals,
-        // which allows further optimizations
-        //
-        // We can't do this in the general case, because String(a) has
-        // slightly different semantics than '' + (a). See
-        // http://code.google.com/p/closure-compiler/issues/detail?id=759
-        Node value = callTarget.getNext();
-        if (value != null && value.getNext() == null &&
-            NodeUtil.isImmutableValue(value)) {
-          Node addition = IR.add(
-              IR.string("").srcref(callTarget),
-              value.detach());
-          n.getParent().replaceChild(n, addition);
-          reportCodeChange();
-          return addition;
+      case "String":
+        {
+          // Fold String(a) to '' + (a) on immutable literals,
+          // which allows further optimizations
+          //
+          // We can't do this in the general case, because String(a) has
+          // slightly different semantics than '' + (a). See
+          // https://blickly.github.io/closure-compiler-issues/#759
+          Node value = callTarget.getNext();
+          if (value != null && value.getNext() == null && NodeUtil.isImmutableValue(value)) {
+            Node addition = IR.add(IR.string("").srcref(callTarget), value.detach());
+            n.replaceWith(addition);
+            reportCodeChange();
+            return addition;
+          }
+          break;
         }
-        break;
-      }
 
       default:
         // nothing.
@@ -330,7 +328,7 @@ class PeepholeSubstituteAlternateSyntax
         && NodeUtil.isUndefined(n)
         && !NodeUtil.isLValue(n)) {
       Node replacement = NodeUtil.newUndefinedNode(n);
-      n.getParent().replaceChild(n, replacement);
+      n.replaceWith(replacement);
       reportCodeChange();
       return replacement;
     }
@@ -386,7 +384,7 @@ class PeepholeSubstituteAlternateSyntax
     Preconditions.checkState(n.isNew());
 
     if (canFoldStandardConstructors(n)) {
-      n.setType(Token.CALL);
+      n.setToken(Token.CALL);
       n.putBooleanProp(Node.FREE_CALL, true);
       reportCodeChange();
     }
@@ -464,7 +462,7 @@ class PeepholeSubstituteAlternateSyntax
         }
 
         if (newLiteralNode != null) {
-          n.getParent().replaceChild(n, newLiteralNode);
+          n.replaceWith(newLiteralNode);
           reportCodeChange();
           return newLiteralNode;
         }
@@ -569,12 +567,12 @@ class PeepholeSubstituteAlternateSyntax
     if (right.isNumber()) {
       if (right.getDouble() == 1) {
         Node newNode = IR.dec(n.removeFirstChild(), false);
-        n.getParent().replaceChild(n, newNode);
+        n.replaceWith(newNode);
         reportCodeChange();
         return newNode;
       } else if (right.getDouble() == -1) {
         Node newNode = IR.inc(n.removeFirstChild(), false);
-        n.getParent().replaceChild(n, newNode);
+        n.replaceWith(newNode);
         reportCodeChange();
         return newNode;
       }
@@ -601,7 +599,7 @@ class PeepholeSubstituteAlternateSyntax
 
       Node not = IR.not(IR.number(n.isTrue() ? 0 : 1));
       not.useSourceInfoIfMissingFromForTree(n);
-      n.getParent().replaceChild(n, not);
+      n.replaceWith(not);
       reportCodeChange();
       return not;
     }
@@ -652,7 +650,7 @@ class PeepholeSubstituteAlternateSyntax
               IR.string("split")),
           IR.string("" + delimiter));
       call.useSourceInfoIfMissingFromForTree(n);
-      n.getParent().replaceChild(n, call);
+      n.replaceWith(call);
       reportCodeChange();
       return call;
     }
@@ -731,7 +729,8 @@ class PeepholeSubstituteAlternateSyntax
     // sb contains everything in s[0:pos]
     StringBuilder sb = null;
     int pos = 0;
-    boolean isEscaped = false, inCharset = false;
+    boolean isEscaped = false;
+    boolean inCharset = false;
     for (int i = 0; i < s.length(); ++i) {
       char ch = s.charAt(i);
       switch (ch) {

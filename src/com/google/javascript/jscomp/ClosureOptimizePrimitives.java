@@ -103,11 +103,11 @@ final class ClosureOptimizePrimitives implements CompilerPass {
           keyNode = IR.string(NodeUtil.getStringValue(keyNode))
               .srcref(keyNode);
         }
-        keyNode.setType(Token.STRING_KEY);
+        keyNode.setToken(Token.STRING_KEY);
         keyNode.setQuotedString();
         objNode.addChildToBack(IR.propdef(keyNode, valueNode));
       }
-      callNode.getParent().replaceChild(callNode, objNode);
+      callNode.replaceWith(objNode);
       compiler.reportCodeChange();
     }
   }
@@ -171,11 +171,11 @@ final class ClosureOptimizePrimitives implements CompilerPass {
           keyNode = IR.string(NodeUtil.getStringValue(keyNode))
               .srcref(keyNode);
         }
-        keyNode.setType(Token.STRING_KEY);
+        keyNode.setToken(Token.STRING_KEY);
         keyNode.setQuotedString();
         objNode.addChildToBack(IR.propdef(keyNode, valueNode));
       }
-      callNode.getParent().replaceChild(callNode, objNode);
+      callNode.replaceWith(objNode);
       compiler.reportCodeChange();
     }
   }
@@ -215,12 +215,13 @@ final class ClosureOptimizePrimitives implements CompilerPass {
       tagName = n.getString().substring(prefix.length());
     } else if (n.isGetProp() && !n.getParent().isGetProp()
         && n.getFirstChild().matchesQualifiedName("goog.dom.TagName")) {
-      tagName = n.getSecondChild().getString();
+      tagName = n.getSecondChild().getString()
+          .replaceFirst(".*\\$", ""); // Added by DisambiguateProperties.
     } else {
       return;
     }
     Node stringNode = IR.string(tagName).srcref(n);
-    n.getParent().replaceChild(n, stringNode);
+    n.replaceWith(stringNode);
     compiler.reportCodeChange();
   }
 }

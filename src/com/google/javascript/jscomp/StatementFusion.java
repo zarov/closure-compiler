@@ -104,7 +104,7 @@ class StatementFusion extends AbstractPeepholeOptimization {
 
   private boolean canFuseIntoOneStatement(Node block) {
     // If we are favoring semi-colon, we shouldn't fuse script blocks.
-    if (!favorsCommaOverSemiColon && !block.isBlock()) {
+    if (!favorsCommaOverSemiColon && !block.isNormalBlock()) {
       return false;
     }
 
@@ -135,13 +135,11 @@ class StatementFusion extends AbstractPeepholeOptimization {
         // We don't want to add a new return value.
         return n.hasChildren();
       case FOR:
-        if (NodeUtil.isForIn(n)) {
-          // Avoid cases where we have for(var x = foo() in a) { ....
-          return !mayHaveSideEffects(n.getFirstChild());
-        } else {
-          // Avoid cases where we have for(var x;_;_) { ....
-          return !n.getFirstChild().isVar();
-        }
+        // Avoid cases where we have for(var x;_;_) { ....
+        return !n.getFirstChild().isVar();
+      case FOR_IN:
+        // Avoid cases where we have for(var x = foo() in a) { ....
+        return !mayHaveSideEffects(n.getFirstChild());
       case LABEL:
         return isFusableControlStatement(n.getLastChild());
       case BLOCK:
@@ -198,16 +196,13 @@ class StatementFusion extends AbstractPeepholeOptimization {
       case THROW:
       case SWITCH:
       case EXPR_RESULT:
+      case FOR:
         before.getParent().removeChild(before);
         fuseExpressionIntoFirstChild(before.removeFirstChild(), control);
         return;
-      case FOR:
+      case FOR_IN:
         before.getParent().removeChild(before);
-        if (NodeUtil.isForIn(control)) {
-          fuseExpressionIntoSecondChild(before.removeFirstChild(), control);
-        } else {
-          fuseExpressionIntoFirstChild(before.removeFirstChild(), control);
-        }
+        fuseExpressionIntoSecondChild(before.removeFirstChild(), control);
         return;
       case LABEL:
         fuseExpressionIntoControlFlowStatement(before, control.getLastChild());

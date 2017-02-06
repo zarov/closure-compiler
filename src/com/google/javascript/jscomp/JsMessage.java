@@ -19,9 +19,9 @@ package com.google.javascript.jscomp;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.annotations.GwtIncompatible;
+import com.google.common.base.Ascii;
 import com.google.common.base.Preconditions;
 import com.google.javascript.jscomp.parsing.parser.util.format.SimpleFormat;
-
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -29,7 +29,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 import javax.annotation.Nullable;
 
 /**
@@ -299,8 +298,8 @@ public final class JsMessage {
   @GwtIncompatible("java.util.regex")
   public static class Builder {
 
-    private static final Pattern MSG_EXTERNAL_PATTERN =
-        Pattern.compile("MSG_EXTERNAL_(\\d+)");
+    // Allow arbitrary suffixes to allow for local variable disambiguation.
+    private static final Pattern MSG_EXTERNAL_PATTERN = Pattern.compile("MSG_EXTERNAL_(\\d+).*");
 
     /**
      * @return an external message id or null if this is not an
@@ -455,7 +454,7 @@ public final class JsMessage {
         }
       }
       long nonnegativeHash = Long.MAX_VALUE & Hash.hash64(sb.toString());
-      return Long.toString(nonnegativeHash, 36).toUpperCase();
+      return Ascii.toUpperCase(Long.toString(nonnegativeHash, 36));
     }
   }
 

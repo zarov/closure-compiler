@@ -25,7 +25,7 @@ import com.google.javascript.jscomp.ReferenceCollectingCallback.Reference;
 import com.google.javascript.jscomp.ReferenceCollectingCallback.ReferenceCollection;
 import com.google.javascript.jscomp.ReferenceCollectingCallback.ReferenceMap;
 import com.google.javascript.rhino.Node;
-
+import com.google.javascript.rhino.TypeI;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -80,8 +80,12 @@ class InlineVariables implements CompilerPass {
 
   @Override
   public void process(Node externs, Node root) {
-    ReferenceCollectingCallback callback = new ReferenceCollectingCallback(
-        compiler, new InliningBehavior(), getFilterForMode());
+    ReferenceCollectingCallback callback =
+        new ReferenceCollectingCallback(
+            compiler,
+            new InliningBehavior(),
+            SyntacticScopeCreator.makeUntyped(compiler),
+            getFilterForMode());
     callback.process(externs, root);
   }
 
@@ -433,11 +437,20 @@ class InlineVariables implements CompilerPass {
       compiler.reportChangeToEnclosingScope(ref.getNode());
       if (ref.isSimpleAssignmentToName()) {
         // This is the initial assignment.
-        ref.getGrandparent().replaceChild(ref.getParent(), value);
+        replaceChildPreserveCast(ref.getGrandparent(), ref.getParent(), value);
       } else {
-        ref.getParent().replaceChild(ref.getNode(), value);
+        replaceChildPreserveCast(ref.getParent(), ref.getNode(), value);
       }
       blacklistVarReferencesInTree(value, v.scope);
+    }
+
+    private void replaceChildPreserveCast(Node parent, Node child, Node replacement) {
+      TypeI typeBeforeCast = child.getTypeIBeforeCast();
+      if (typeBeforeCast != null) {
+        replacement.putProp(Node.TYPE_BEFORE_CAST, typeBeforeCast);
+        replacement.setTypeI(child.getTypeI());
+      }
+      parent.replaceChild(child, replacement);
     }
 
     /**
@@ -629,7 +642,7 @@ class InlineVariables implements CompilerPass {
      */
     private boolean isValidDeclaration(Reference declaration) {
       return (declaration.getParent().isVar()
-          && !declaration.getGrandparent().isFor())
+              && !NodeUtil.isLoopStructure(declaration.getGrandparent()))
           || NodeUtil.isFunctionDeclaration(declaration.getParent());
     }
 

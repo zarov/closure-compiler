@@ -16,6 +16,7 @@
 
 package com.google.javascript.jscomp.parsing;
 
+import com.google.common.base.Ascii;
 import com.google.common.base.Preconditions;
 import com.google.javascript.jscomp.parsing.Config.LanguageMode;
 import com.google.javascript.jscomp.parsing.ParserRunner.ParseResult;
@@ -23,7 +24,6 @@ import com.google.javascript.rhino.ErrorReporter;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.SimpleErrorReporter;
 import com.google.javascript.rhino.StaticSourceFile;
-
 import java.util.HashSet;
 
 /**
@@ -117,7 +117,7 @@ public final class TypeTransformationParser {
   }
 
   private Keywords nameToKeyword(String s) {
-    return Keywords.valueOf(s.toUpperCase());
+    return Keywords.valueOf(Ascii.toUpperCase(s));
   }
 
   private boolean isValidKeyword(String name) {
@@ -249,7 +249,11 @@ public final class TypeTransformationParser {
    */
   public boolean parseTypeTransformation() {
     Config config =
-        new Config(new HashSet<String>(), new HashSet<String>(), LanguageMode.ECMASCRIPT6);
+        new Config(
+            new HashSet<String>(),
+            new HashSet<String>(),
+            LanguageMode.ECMASCRIPT6,
+            Config.StrictMode.SLOPPY);
     // TODO(lpino): ParserRunner reports errors if the expression is not
     // ES6 valid. We need to abort the validation of the type transformation
     // whenever an error is reported.
@@ -268,9 +272,18 @@ public final class TypeTransformationParser {
       // No need to add a new warning because the validation does it
       return false;
     }
+    fixLineNumbers(expr);
     // Store the result if the AST is valid
     typeTransformationAst = expr;
     return true;
+  }
+
+  private void fixLineNumbers(Node expr) {
+    // TODO(tbreisacher): Also fix column numbers.
+    expr.setLineno(expr.getLineno() + templateLineno);
+    for (Node child : expr.children()) {
+      fixLineNumbers(child);
+    }
   }
 
   /**

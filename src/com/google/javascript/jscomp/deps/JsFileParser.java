@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -44,6 +45,8 @@ public final class JsFileParser extends JsFileLineParser {
 
   /** Pattern for matching goog.provide(*) and goog.require(*). */
   private static final Pattern GOOG_PROVIDE_REQUIRE_PATTERN =
+      // TODO(sdh): this handles goog.loadModule(function(){"use strict";goog.module
+      // but fails to match without "use strict"; since we look for semicolon, not open brace.
       Pattern.compile(
           "(?:^|;)(?:[a-zA-Z0-9$_,:{}\\s]+=)?\\s*"
               + "goog\\.(provide|module|require|addDependency)\\s*\\((.*?)\\)");
@@ -96,7 +99,7 @@ public final class JsFileParser extends JsFileLineParser {
   private List<String> requires;
   private boolean fileHasProvidesOrRequires;
   private ModuleLoader loader = ModuleLoader.EMPTY;
-  private ModuleLoader.ModuleUri fileUri;
+  private ModuleLoader.ModulePath file;
 
   private enum ModuleType {
     NON_MODULE,
@@ -160,8 +163,7 @@ public final class JsFileParser extends JsFileLineParser {
    */
   public DependencyInfo parseFile(String filePath, String closureRelativePath,
       String fileContents) {
-    return parseReader(filePath, closureRelativePath,
-        new StringReader(fileContents));
+    return parseReader(filePath, closureRelativePath, new StringReader(fileContents));
   }
 
   private DependencyInfo parseReader(String filePath,
@@ -169,14 +171,16 @@ public final class JsFileParser extends JsFileLineParser {
     this.provides = new ArrayList<>();
     this.requires = new ArrayList<>();
     this.fileHasProvidesOrRequires = false;
-    this.fileUri = loader.resolve(filePath);
+    this.file = loader.resolve(filePath);
     this.moduleType = ModuleType.NON_MODULE;
 
-    logger.fine("Parsing Source: " + filePath);
+    if (logger.isLoggable(Level.FINE)) {
+      logger.fine("Parsing Source: " + filePath);
+    }
     doParse(filePath, fileContents);
 
     if (moduleType == ModuleType.ES6_MODULE) {
-      provides.add(fileUri.toModuleName());
+      provides.add(file.toModuleName());
     }
 
     Map<String, String> loadFlags = new LinkedHashMap<>();
@@ -193,7 +197,9 @@ public final class JsFileParser extends JsFileLineParser {
 
     DependencyInfo dependencyInfo = new SimpleDependencyInfo(
         closureRelativePath, filePath, provides, requires, loadFlags);
-    logger.fine("DepInfo: " + dependencyInfo);
+    if (logger.isLoggable(Level.FINE)) {
+      logger.fine("DepInfo: " + dependencyInfo);
+    }
     return dependencyInfo;
   }
 
@@ -201,7 +207,7 @@ public final class JsFileParser extends JsFileLineParser {
     if (moduleType != type && moduleType != ModuleType.NON_MODULE) {
       // TODO(sdh): should this be an error?
       errorManager.report(
-          CheckLevel.WARNING, JSError.make(ModuleLoader.MODULE_CONFLICT, fileUri.toString()));
+          CheckLevel.WARNING, JSError.make(ModuleLoader.MODULE_CONFLICT, file.toString()));
     }
     moduleType = type;
   }
@@ -213,6 +219,10 @@ public final class JsFileParser extends JsFileLineParser {
   @Override
   protected boolean parseLine(String line) throws ParseException {
     boolean lineHasProvidesOrRequires = false;
+
+    if (line.startsWith(BUNDLED_GOOG_MODULE_START)) {
+      setModuleType(ModuleType.WRAPPED_GOOG_MODULE);
+    }
 
     // Quick sanity check that will catch most cases. This is a performance
     // win for people with a lot of JS.
@@ -262,8 +272,6 @@ public final class JsFileParser extends JsFileLineParser {
 
       // base.js can't provide or require anything else.
       return false;
-    } else if (line.startsWith(BUNDLED_GOOG_MODULE_START)) {
-      setModuleType(ModuleType.WRAPPED_GOOG_MODULE);
     }
 
     if (line.startsWith("import") || line.startsWith("export")) {
@@ -277,7 +285,11 @@ public final class JsFileParser extends JsFileLineParser {
           if (arg.startsWith("goog:")) {
             requires.add(arg.substring(5)); // cut off the "goog:" prefix
           } else {
-            requires.add(fileUri.resolveEs6Module(arg).toModuleName());
+            ModuleLoader.ModulePath path = file.resolveJsModule(arg);
+            if (path == null) {
+              path = file.resolveModuleAsPath(arg);
+            }
+            requires.add(path.toModuleName());
           }
         }
       }

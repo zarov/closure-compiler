@@ -17,6 +17,7 @@
 package com.google.javascript.refactoring;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.javascript.refactoring.SuggestedFix.getShortNameForRequire;
 import static com.google.javascript.refactoring.testing.SuggestedFixes.assertChanges;
 import static com.google.javascript.refactoring.testing.SuggestedFixes.assertReplacement;
 import static org.junit.Assert.assertEquals;
@@ -44,7 +45,6 @@ import org.junit.runners.JUnit4;
  */
 @RunWith(JUnit4.class)
 public class SuggestedFixTest {
-
   @Test
   public void testInsertBefore() {
     String before = "var someRandomCode = {};";
@@ -448,13 +448,25 @@ public class SuggestedFixTest {
   }
 
   @Test
-  public void testInsertArguments_castInArguments() {
+  public void testInsertArguments_beforeCastInArguments() {
     String originalCode = "goog.dom.classes.add(foo, /** @type {String} */ (bar));";
     String expectedCode = "goog.dom.classes.add(foo, baz, /** @type {String} */ (bar));";
     Compiler compiler = getCompiler(originalCode);
     Node root = compileToScriptRoot(compiler);
     SuggestedFix fix = new SuggestedFix.Builder()
         .insertArguments(root.getFirstFirstChild(), 1, "baz")
+        .build();
+    assertChanges(fix, "", originalCode, expectedCode);
+  }
+
+  @Test
+  public void testInsertArguments_afterCastInArguments() {
+    String originalCode = "goog.dom.classes.add(foo, /** @type {String} */ (bar));";
+    String expectedCode = "goog.dom.classes.add(foo, /** @type {String} */ (bar), baz);";
+    Compiler compiler = getCompiler(originalCode);
+    Node root = compileToScriptRoot(compiler);
+    SuggestedFix fix = new SuggestedFix.Builder()
+        .insertArguments(root.getFirstFirstChild(), 2, "baz")
         .build();
     assertChanges(fix, "", originalCode, expectedCode);
   }
@@ -586,6 +598,18 @@ public class SuggestedFixTest {
     } catch (IllegalStateException e) {
       // Success, an exception was thrown for an invalid index.
     }
+  }
+
+  @Test
+  public void testAddGoogRequire_var() {
+    String before = "goog.provide('js.Foo');\n";
+    String after = Joiner.on('\n').join(
+        "goog.require('js.Bar');",
+        "",
+        "var x;",
+        "/** @private */",
+        "function foo_() {};");
+    assertAddGoogRequire(before, after, "abc.def");
   }
 
   @Test
@@ -729,6 +753,24 @@ public class SuggestedFixTest {
   }
 
   @Test
+  public void testGenerateCode_var1() {
+    String code = "var x;\nvar y;\n";
+    Compiler compiler = getCompiler(code);
+    Node node = compileToScriptRoot(compiler);
+    String generated = new SuggestedFix.Builder().generateCode(compiler, node);
+    assertEquals(code, generated);
+  }
+
+  @Test
+  public void testGenerateCode_var2() {
+    String code = "var x = 0;\nvar y = 1;\n";
+    Compiler compiler = getCompiler(code);
+    Node node = compileToScriptRoot(compiler);
+    String generated = new SuggestedFix.Builder().generateCode(compiler, node);
+    assertEquals(code, generated);
+  }
+
+  @Test
   public void testAttachMatchedNodeInfo() {
     String before = "/** @fileoverview blah */\n\n"
         + "goog.provide('js.Foo');\n\n";
@@ -774,4 +816,16 @@ public class SuggestedFixTest {
     compiler.parse();
     return compiler;
   }
+
+  @Test
+  public void testShortName() {
+    assertThat(getShortNameForRequire("goog.array")).isEqualTo("googArray");
+    assertThat(getShortNameForRequire("goog.string")).isEqualTo("googString");
+    assertThat(getShortNameForRequire("goog.object")).isEqualTo("googObject");
+    assertThat(getShortNameForRequire("goog.structs.Map")).isEqualTo("StructsMap");
+
+    assertThat(getShortNameForRequire("array")).isEqualTo("array");
+    assertThat(getShortNameForRequire("Array")).isEqualTo("Array");
+  }
+
 }

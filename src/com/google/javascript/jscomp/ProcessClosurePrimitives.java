@@ -26,7 +26,6 @@ import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -35,7 +34,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
-
 import javax.annotation.Nullable;
 
 /**
@@ -194,7 +192,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
 
   @Override
   public void process(Node externs, Node root) {
-    NodeTraversal.traverseEs6(compiler, root, this);
+    NodeTraversal.traverseRootsEs6(compiler, this, externs, root);
 
     for (Node n : defineCalls) {
       replaceGoogDefines(n);
@@ -233,12 +231,12 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
     Node parent = n.getParent();
     Preconditions.checkState(parent.isExprResult());
     String name = n.getSecondChild().getString();
-    Node value = n.getChildAtIndex(2).detach();
+    Node value = n.isFromExterns() ? null : n.getChildAtIndex(2).detach();
 
     Node replacement = NodeUtil.newQNameDeclaration(
         compiler, name, value, n.getJSDocInfo());
     replacement.useSourceInfoIfMissingFromForTree(parent);
-    parent.getParent().replaceChild(parent, replacement);
+    parent.replaceWith(replacement);
     compiler.reportCodeChange();
   }
 
@@ -319,7 +317,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
         break;
 
       case EXPR_RESULT:
-        handleTypedefDefinition(t, n);
+        handleStubDefinition(t, n);
         break;
 
       case CLASS:
@@ -413,17 +411,18 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
       } else {
         JSModule providedModule = provided.explicitModule;
 
-        // This must be non-null, because there was an explicit provide.
-        Preconditions.checkNotNull(providedModule);
+        if (!provided.isFromExterns()) {
+          Preconditions.checkNotNull(providedModule, n);
 
-        JSModule module = t.getModule();
-        if (moduleGraph != null
-            && module != providedModule
-            && !moduleGraph.dependsOn(module, providedModule)) {
-          compiler.report(
-              t.makeError(n, XMODULE_REQUIRE_ERROR, ns,
-                  providedModule.getName(),
-                  module.getName()));
+          JSModule module = t.getModule();
+          if (moduleGraph != null
+              && module != providedModule
+              && !moduleGraph.dependsOn(module, providedModule)) {
+            compiler.report(
+                t.makeError(n, XMODULE_REQUIRE_ERROR, ns,
+                    providedModule.getName(),
+                    module.getName()));
+          }
         }
       }
 
@@ -487,13 +486,18 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
   }
 
   /**
-   * Handles a typedef definition for a goog.provided name.
+   * Handles a stub definition for a goog.provided name
+   * (e.g. a @typedef or a definition from externs)
+   *
    * @param n EXPR_RESULT node.
    */
-  private void handleTypedefDefinition(
-      NodeTraversal t, Node n) {
+  private void handleStubDefinition(NodeTraversal t, Node n) {
+    if (!t.inGlobalHoistScope()) {
+      return;
+    }
     JSDocInfo info = n.getFirstChild().getJSDocInfo();
-    if (t.inGlobalHoistScope() && info != null && info.hasTypedefType()) {
+    boolean hasStubDefinition = info != null && (n.isFromExterns() || info.hasTypedefType());
+    if (hasStubDefinition) {
       String name = n.getFirstChild().getQualifiedName();
       if (name != null) {
         ProvidedName pn = providedNames.get(name);
@@ -886,7 +890,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
       // Record this provide created on a previous pass, and create a dummy
       // EXPR node as a placeholder to simulate an explicit provide.
       Node expr = new Node(Token.EXPR_RESULT);
-      expr.copyInformationFromForTree(parent);
+      expr.useSourceInfoWithoutLengthIfMissingFromForTree(parent);
       parent.getParent().addChildBefore(expr, parent);
       compiler.reportCodeChange();
 
@@ -1046,7 +1050,8 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
 
     // Verify second arg
     arg = arg.getNext();
-    if (!verifyNotNull(t, methodName, arg) || !verifyIsLast(t, methodName, arg)) {
+    if (!args.isFromExterns()
+        && (!verifyNotNull(t, methodName, arg) || !verifyIsLast(t, methodName, arg))) {
       return false;
     }
 
@@ -1275,6 +1280,10 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
       return explicitNode != null;
     }
 
+    boolean isFromExterns() {
+      return explicitNode.isFromExterns();
+    }
+
     /**
      * Record function declaration, variable declaration or assignment that
      * refers to the same name as the provide statement.  Give preference to
@@ -1363,8 +1372,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
             nameNode.addChildToFront(valueNode);
             Node varNode = IR.var(nameNode);
             varNode.useSourceInfoFrom(candidateDefinition);
-            candidateDefinition.getParent().replaceChild(
-                candidateDefinition, varNode);
+            candidateDefinition.replaceWith(varNode);
             varNode.setJSDocInfo(assignNode.getJSDocInfo());
             compiler.reportCodeChange();
             replacementNode = varNode;
@@ -1479,7 +1487,7 @@ class ProcessClosurePrimitives extends AbstractPostOrderCallback
       Node provideStringNode = getProvideStringNode();
       int offset = provideStringNode == null ? 0 : getSourceInfoOffset();
       Node sourceInfoNode = provideStringNode == null ? firstNode : provideStringNode;
-      newNode.copyInformationFromForTree(sourceInfoNode);
+      newNode.useSourceInfoWithoutLengthIfMissingFromForTree(sourceInfoNode);
       if (offset != 0) {
         newNode.setSourceEncodedPositionForTree(
             sourceInfoNode.getSourcePosition() + offset);

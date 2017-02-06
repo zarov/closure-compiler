@@ -150,13 +150,11 @@ public final class AliasStringsTest extends CompilerTestCase {
   public void testObjectLiterals() {
     strings = ImmutableSet.of("pxpxpxpxpxpxpxpxpxpx", "abcdefghijabcdefghij");
 
-    test("var foo={px:435}", "var foo={px:435}");
+    testSame("var foo={px:435}");
 
     // string as key
-    test("var foo={'pxpxpxpxpxpxpxpxpxpx':435}", "var foo={'pxpxpxpxpxpxpxpxpxpx':435}");
-    test(
-        "bar=function f(){return {'pxpxpxpxpxpxpxpxpxpx':435}}",
-        "bar=function f(){return {'pxpxpxpxpxpxpxpxpxpx':435}}");
+    testSame("var foo={'pxpxpxpxpxpxpxpxpxpx':435}");
+    testSame("bar=function f(){return {'pxpxpxpxpxpxpxpxpxpx':435}}");
 
     test(
         "function f() {var foo={bar:'abcdefghijabcdefghij'+'abcdefghijabcdefghij'}}",
@@ -252,19 +250,19 @@ public final class AliasStringsTest extends CompilerTestCase {
 
     test("a='Antidisestablishmentarianism';" +
          "b='Antidisestablishmentarianism';",
-         "var $$S_Antidisestablishment_506eaf9c=" +
+         "var $$S_Antidisestablishment_e428eaa9=" +
          "  'Antidisestablishmentarianism';"      +
-         "a=$$S_Antidisestablishment_506eaf9c;"   +
-         "b=$$S_Antidisestablishment_506eaf9c");
+         "a=$$S_Antidisestablishment_e428eaa9;"   +
+         "b=$$S_Antidisestablishment_e428eaa9");
 
     // Check that small changes give different hash codes
 
     test("a='AntidisestablishmentarianIsm';" +
          "b='AntidisestablishmentarianIsm';",
-         "var $$S_Antidisestablishment_6823e97c=" +
+         "var $$S_Antidisestablishment_e4287289=" +
          "  'AntidisestablishmentarianIsm';"      +
-         "a=$$S_Antidisestablishment_6823e97c;"   +
-         "b=$$S_Antidisestablishment_6823e97c");
+         "a=$$S_Antidisestablishment_e4287289;"   +
+         "b=$$S_Antidisestablishment_e4287289");
 
     // TODO(user): check that hash code collisions are handled.
   }

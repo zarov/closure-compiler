@@ -60,10 +60,22 @@ public final class NominalType {
     return this.rawType;
   }
 
+  // NOTE(dimvar): we need this to get access to the static properties of the class.
+  // It'd be good if these properties were on the type returned by getConstructorFunction,
+  // but there are some circularity issues when we're computing the namespace types.
+  // Maybe revisit in the future to improve this.
+  public JSType getNamespaceType() {
+    return this.rawType.toJSType();
+  }
+
   public JSType getInstanceAsJSType() {
     return (this.rawType.isGeneric() && !typeMap.isEmpty())
         ? JSType.fromObjectType(ObjectType.fromNominalType(this))
         : this.rawType.getInstanceAsJSType();
+  }
+
+  JSTypes getCommonTypes() {
+    return this.rawType.getCommonTypes();
   }
 
   ObjectKind getObjectKind() {
@@ -81,7 +93,7 @@ public final class NominalType {
     // This type is a subtype of all indexed types it inherits from,
     // and we use contravariance for the key of the index operation,
     // so we join here.
-    JSType result = JSType.BOTTOM;
+    JSType result = getCommonTypes().BOTTOM;
     for (NominalType interf : getInstantiatedIObjectInterfaces()) {
       JSType tmp = interf.getIndexType();
       if (tmp != null) {
@@ -98,7 +110,7 @@ public final class NominalType {
     // This type is a subtype of all indexed types it inherits from,
     // and we use covariance for the value of the index operation,
     // so we meet here.
-    JSType result = JSType.TOP;
+    JSType result = getCommonTypes().TOP;
     // We need this because the index type may explicitly be TOP.
     boolean foundIObject = false;
     for (NominalType interf : getInstantiatedIObjectInterfaces()) {
@@ -116,19 +128,27 @@ public final class NominalType {
   }
 
   boolean isClassy() {
-    return !isFunction() && !isBuiltinObject();
+    return !isFunction() && !isBuiltinObject() && !isLiteralObject();
   }
 
-  boolean isFunction() {
+  public boolean isFunction() {
     return this.rawType.isBuiltinWithName("Function");
   }
 
   public boolean isBuiltinObject() {
-    return this.rawType.isBuiltinWithName("Object");
+    return this.rawType.isBuiltinObject();
+  }
+
+  public boolean isLiteralObject() {
+    return this.rawType.isBuiltinWithName(JSTypes.OBJLIT_CLASS_NAME);
   }
 
   boolean isIObject() {
     return this.rawType.isBuiltinWithName("IObject");
+  }
+
+  boolean isIArrayLike() {
+    return this.rawType.isBuiltinWithName("IArrayLike");
   }
 
   public boolean isStruct() {
@@ -152,7 +172,10 @@ public final class NominalType {
   }
 
   public FunctionType getConstructorFunction() {
-    return this.rawType.getConstructorFunction();
+    if (this.typeMap.isEmpty()) {
+      return this.rawType.getConstructorFunction();
+    }
+    return this.rawType.getConstructorFunction().instantiateGenerics(this.typeMap);
   }
 
   NominalType instantiateGenerics(List<JSType> types) {
@@ -213,7 +236,7 @@ public final class NominalType {
 
   NominalType instantiateGenericsWithUnknown() {
     NominalType thisWithoutTypemap = this.rawType.getAsNominalType();
-    return thisWithoutTypemap.instantiateGenerics(JSType.MAP_TO_UNKNOWN);
+    return thisWithoutTypemap.instantiateGenerics(getCommonTypes().MAP_TO_UNKNOWN);
   }
 
   public String getName() {
@@ -227,6 +250,10 @@ public final class NominalType {
 
   public boolean isClass() {
     return this.rawType.isClass();
+  }
+
+  public boolean isAbstractClass() {
+    return this.rawType.isAbstractClass();
   }
 
   public boolean isInterface() {
@@ -299,10 +326,10 @@ public final class NominalType {
   }
 
   Property getProp(String pname) {
-    if (this.rawType.name.equals("Array")
+    if (this.rawType.isBuiltinWithName("Array")
         && NUMERIC_PATTERN.matcher(pname).matches()) {
       if (typeMap.isEmpty()) {
-        return Property.make(JSType.UNKNOWN, null);
+        return Property.make(getCommonTypes().UNKNOWN, null);
       }
       Preconditions.checkState(typeMap.size() == 1);
       JSType elmType = Iterables.getOnlyElement(typeMap.values());
@@ -334,6 +361,10 @@ public final class NominalType {
 
   boolean mayHaveProp(String pname) {
     return this.rawType.mayHaveProp(pname);
+  }
+
+  public boolean hasAbstractMethod(String pname) {
+    return this.rawType.hasAbstractMethod(pname);
   }
 
   boolean isSubtypeOf(NominalType other, SubtypeCache subSuperMap) {
@@ -385,6 +416,14 @@ public final class NominalType {
       && thisRaw.getSuperClass().instantiateGenerics(this.typeMap).isNominalSubtypeOf(other);
   }
 
+  boolean isIObjectSubtypeOf(NominalType other) {
+    Preconditions.checkState(
+        this.inheritsFromIObjectReflexive() && other.inheritsFromIObjectReflexive());
+    // Contravariance for the index type and covariance for the indexed type.
+    return other.getIndexType().isSubtypeOf(this.getIndexType())
+        && this.getIndexedType().isSubtypeOf(other.getIndexedType());
+  }
+
   private boolean areTypeMapsCompatible(NominalType other) {
     Preconditions.checkState(this.rawType.equals(other.rawType));
     if (this.typeMap.isEmpty()) {
@@ -402,7 +441,14 @@ public final class NominalType {
           other, typeVar, this.typeMap.get(typeVar), this);
       JSType thisType = this.typeMap.get(typeVar);
       JSType otherType = other.typeMap.get(typeVar);
-      if (!thisType.isSubtypeOf(otherType)) {
+      JSTypes commonTypes = getCommonTypes();
+      if (commonTypes.bivariantArrayGenerics && this.rawType.isBuiltinWithName("Array")) {
+        thisType = thisType.removeType(commonTypes.NULL_OR_UNDEFINED);
+        otherType = otherType.removeType(commonTypes.NULL_OR_UNDEFINED);
+        if (!thisType.isSubtypeOf(otherType) && !otherType.isSubtypeOf(thisType)) {
+          return false;
+        }
+      } else if (!thisType.isSubtypeOf(otherType)) {
         return false;
       }
     }
@@ -455,7 +501,8 @@ public final class NominalType {
           "Type variable %s not in the domain: %s",
           typeVar, this.typeMap.keySet());
       JSType t = this.typeMap.get(typeVar);
-      if (!t.isUnknown() && !t.equals(JSType.fromTypeVar(typeVar))) {
+      if (!t.isUnknown()
+          && !t.equals(JSType.fromTypeVar(getCommonTypes(), typeVar))) {
         return false;
       }
     }
@@ -508,10 +555,9 @@ public final class NominalType {
     }
     // Most of the time, both nominal types are already instantiated when
     // unifyWith is called. Rarely, when we call a polymorphic function from the
-    // body of a method of a polymorphic class, then other.typeMap is
-    // empty. For now, don't do anything fancy in that case.
-    Preconditions.checkState(!typeMap.isEmpty());
-    if (other.typeMap.isEmpty()) {
+    // body of a method of a polymorphic class, then this.typeMap and/or other.typeMap
+    // can be empty. For now, don't do anything fancy in that case.
+    if (this.typeMap.isEmpty() || other.typeMap.isEmpty()) {
       return true;
     }
     boolean hasUnified = true;

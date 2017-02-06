@@ -19,7 +19,6 @@ package com.google.javascript.jscomp;
 import com.google.common.annotations.GwtIncompatible;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
 import com.google.common.reflect.TypeToken;
@@ -38,6 +37,7 @@ import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.TypeI;
 import com.google.javascript.rhino.TypeIRegistry;
 import com.google.javascript.rhino.jstype.JSTypeNative;
+
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
@@ -46,6 +46,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
+
 import javax.annotation.Nullable;
 
 /**
@@ -220,10 +221,12 @@ public final class ConformanceRules {
   }
 
 
+
+
   abstract static class AbstractTypeRestrictionRule extends AbstractRule {
     private final TypeI nativeObjectType;
     private final TypeI whitelistedTypes;
-    private final ImmutableList<AssertionFunctionSpec> assertions;
+    private final ImmutableList<Node> assertionsFunctionNames;
 
 
     public AbstractTypeRestrictionRule(AbstractCompiler compiler, Requirement requirement)
@@ -232,7 +235,12 @@ public final class ConformanceRules {
       nativeObjectType = compiler.getTypeIRegistry().getNativeType(JSTypeNative.OBJECT_TYPE);
       List<String> whitelistedTypeNames = requirement.getValueList();
       whitelistedTypes = union(whitelistedTypeNames);
-      assertions = ImmutableList.copyOf(compiler.getCodingConvention().getAssertionFunctions());
+
+      ImmutableList.Builder<Node> builder = ImmutableList.builder();
+      for (AssertionFunctionSpec fn : compiler.getCodingConvention().getAssertionFunctions()) {
+        builder.add(NodeUtil.newQName(compiler, fn.getFunctionName()));
+      }
+      assertionsFunctionNames = builder.build();
     }
 
     protected boolean isWhitelistedType(Node n) {
@@ -266,6 +274,11 @@ public final class ConformanceRules {
       return (type == null || type.isUnknownType());
     }
 
+    protected boolean isSomeUnknownType(Node n) {
+      TypeI type = n.getTypeI();
+      return (type == null || type.isSomeUnknownType());
+    }
+
     protected boolean isTypeVariable(Node n) {
       TypeI type = n.getTypeI().restrictByNotNullOrUndefined();
       return type.isTypeVariable();
@@ -296,8 +309,8 @@ public final class ConformanceRules {
     protected boolean isAssertionCall(Node n) {
       if (n.isCall() && n.getFirstChild().isQualifiedName()) {
         Node target = n.getFirstChild();
-        for (int i = 0; i < assertions.size(); i++) {
-          if (target.matchesQualifiedName(assertions.get(i).getFunctionName())) {
+        for (int i = 0; i < assertionsFunctionNames.size(); i++) {
+          if (target.matchesQualifiedName(assertionsFunctionNames.get(i))) {
             return true;
           }
         }
@@ -305,13 +318,8 @@ public final class ConformanceRules {
       return false;
     }
 
-    protected boolean wasCast(Node n) {
-      return n.getTypeIBeforeCast() != null;
-    }
-
     protected boolean isTypeImmediatelyTightened(Node n) {
-      Node parent = n.getParent();
-      return wasCast(n) || isAssertionCall(parent);
+      return isAssertionCall(n.getParent()) || /* casted node */ n.getTypeIBeforeCast() != null;
     }
 
     protected boolean isUsed(Node n) {
@@ -382,7 +390,7 @@ public final class ConformanceRules {
    * Banned name rule
    */
   static class BannedName extends AbstractRule {
-    private final List<String> names;
+    private final ImmutableList<Node> names;
 
     BannedName(AbstractCompiler compiler, Requirement requirement)
         throws InvalidRequirementSpec {
@@ -390,26 +398,39 @@ public final class ConformanceRules {
       if (requirement.getValueCount() == 0) {
         throw new InvalidRequirementSpec("missing value");
       }
-      names = requirement.getValueList();
+      ImmutableList.Builder<Node> builder = ImmutableList.builder();
+      for (String name : requirement.getValueList()) {
+        builder.add(NodeUtil.newQName(compiler, name));
+      }
+      names = builder.build();
     }
 
     @Override
     protected ConformanceResult checkConformance(NodeTraversal t, Node n) {
-      if (NodeUtil.isInSyntheticScript(n)) {
-        return ConformanceResult.CONFORMANCE;
-      }
-
-      if (n.isGetProp() || n.isName()) {
-        if (n.isQualifiedName()) {
-          for (int i = 0; i < names.size(); i++) {
-            String name = names.get(i);
-            if (n.matchesQualifiedName(name) && isRootOfQualifiedNameGlobal(t, n)) {
+      if (isCandidateNode(n)) {
+        for (int i = 0; i < names.size(); i++) {
+          Node nameNode = names.get(i);
+          if (n.matchesQualifiedName(nameNode) && isRootOfQualifiedNameGlobal(t, n)) {
+            if (NodeUtil.isInSyntheticScript(n)) {
+              return ConformanceResult.CONFORMANCE;
+            } else {
               return ConformanceResult.VIOLATION;
             }
           }
         }
       }
       return ConformanceResult.CONFORMANCE;
+    }
+
+    private boolean isCandidateNode(Node n) {
+      switch(n.getToken()) {
+        case GETPROP:
+          return n.getFirstChild().isQualifiedName();
+        case NAME:
+          return !n.getString().isEmpty();
+        default:
+          return false;
+      }
     }
 
     private static boolean isRootOfQualifiedNameGlobal(NodeTraversal t, Node n) {
@@ -664,10 +685,10 @@ public final class ConformanceRules {
    */
   static class RestrictedNameCall extends AbstractRule {
     private static class Restriction {
-      final String name;
+      final Node name;
       final FunctionTypeI restrictedCallType;
 
-      Restriction(String name, FunctionTypeI restrictedCallType) {
+      Restriction(Node name, FunctionTypeI restrictedCallType) {
         this.name = name;
         this.restrictedCallType = restrictedCallType;
       }
@@ -684,7 +705,7 @@ public final class ConformanceRules {
 
       ImmutableList.Builder <Restriction> builder = ImmutableList.builder();
       for (String value : requirement.getValueList()) {
-        String name = getNameFromValue(value);
+        Node name = NodeUtil.newQName(compiler, getNameFromValue(value));
         String restrictedDecl = getTypeFromValue(value);
         if (name == null || restrictedDecl == null) {
           throw new InvalidRequirementSpec("bad prop value");
@@ -975,7 +996,7 @@ public final class ConformanceRules {
           if (cause instanceof InvalidRequirementSpec) {
             throw (InvalidRequirementSpec) cause;
           }
-          throw Throwables.propagate(cause);
+          throw new RuntimeException(cause);
         }
         return rule;
       } catch (InstantiationException | IllegalAccessException | IllegalArgumentException e) {
@@ -1222,28 +1243,29 @@ public final class ConformanceRules {
 
     @Override
     protected ConformanceResult checkConformance(NodeTraversal t, Node n) {
-      // TODO(tbreisacher): Figure out how to remove this restriction.
-      String filename = n.getSourceFileName();
-      if (filename != null
-          && (filename.contains("synthetic:es6/weakmap")
-              || filename.contains("synthetic:es6/weakset")
-              || filename.contains("synthetic:runtime_type_check"))) {
-        return ConformanceResult.CONFORMANCE;
-      }
-
       if (n.isGetProp()
-          && n.getTypeI().isSomeUnknownType()
+          && isSomeUnknownType(n)
           && isUsed(n) // skip most assignments, etc
           && !isTypeImmediatelyTightened(n)
           && isCheckablePropertySource(n.getFirstChild()) // not a cascading unknown
           && !isTypeVariable(n)
-          && !isDeclaredUnknown(n)) {
+          && !isDeclaredUnknown(n)
+          && !isInWhitelistedSyntheticFile(n)) {
         String propName = n.getLastChild().getString();
         String typeName = n.getFirstChild().getTypeI().toString();
         return new ConformanceResult(ConformanceLevel.VIOLATION,
             "The property \"" + propName + "\" on type \"" + typeName + "\"");
       }
       return ConformanceResult.CONFORMANCE;
+    }
+
+    private boolean isInWhitelistedSyntheticFile(Node n) {
+      // TODO(tbreisacher): Figure out how to remove this restriction.
+      String filename = n.getSourceFileName();
+      return (filename != null
+          && (filename.contains("synthetic:es6/weakmap")
+              || filename.contains("synthetic:es6/weakset")
+              || filename.contains("synthetic:runtime_type_check")));
     }
 
     private boolean isCheckablePropertySource(Node n) {
@@ -1393,123 +1415,6 @@ public final class ConformanceRules {
         return ConformanceResult.VIOLATION;
       }
       return ConformanceResult.CONFORMANCE;
-    }
-  }
-
-  /**
-   * Requires top-level Closure-style "declarations"
-   * (example: {@code foo.bar.Baz = ...;}) to have explicit visibility
-   * annotations, either at the declaration site or in the {@code @fileoverview}
-   * block.
-   */
-  public static final class NoImplicitlyPublicDecls extends AbstractRule {
-    public NoImplicitlyPublicDecls(
-        AbstractCompiler compiler, Requirement requirement)
-        throws InvalidRequirementSpec {
-      super(compiler, requirement);
-    }
-
-    @Override
-    protected ConformanceResult checkConformance(NodeTraversal t, Node n) {
-      if (!t.inGlobalScope()
-          || !n.isExprResult()
-          || !n.getFirstChild().isAssign()
-          || n.getFirstChild().getLastChild() == null
-          || n.getFirstChild().getLastChild().isObjectLit()
-          || isWizDeclaration(n)) {
-        return ConformanceResult.CONFORMANCE;
-      }
-      // TODO(tbreisacher): Instead of skipping goog.modules entirely, run
-      // this check before goog.modules are rewritten, so that we can catch
-      // implicitly public prototype methods.
-      Node enclosingScript = NodeUtil.getEnclosingScript(n);
-      if (enclosingScript != null && enclosingScript.getBooleanProp(Node.GOOG_MODULE)) {
-        return ConformanceResult.CONFORMANCE;
-      }
-
-      JSDocInfo ownJsDoc = n.getFirstChild().getJSDocInfo();
-      if (ownJsDoc != null && ownJsDoc.isConstructor()) {
-        FunctionTypeI functionType = n.getFirstChild()
-            .getTypeI()
-            .toMaybeFunctionType();
-        if (functionType == null) {
-          return ConformanceResult.CONFORMANCE;
-        }
-        ObjectTypeI instanceType = functionType.getInstanceType();
-        if (instanceType == null) {
-          return ConformanceResult.CONFORMANCE;
-        }
-        ConformanceResult result = checkCtorProperties(instanceType);
-        if (result.level != ConformanceLevel.CONFORMANCE) {
-          return result;
-        }
-      }
-
-      return visibilityAtDeclarationOrFileoverview(ownJsDoc, getScriptNode(n));
-    }
-
-    /**
-     * Do not check Wiz-style declarations for implicit public visibility.
-     * Example:
-     * <code>
-     * foo.Bar = wiz.service(...);
-     * </code>
-     * {@link WizPass} rewrites portions of the AST, and I believe it
-     * does not propagate the constructor JsDoc properly. Until I have time
-     * to investigate, this seems like a reasonable workaround.
-     * TODO(brndn): get to the bottom of this. See b/18436759.
-     */
-    private static boolean isWizDeclaration(Node n) {
-      Node lastChild = n.getFirstChild().getLastChild();
-      if (!lastChild.isCall()) {
-        return false;
-      }
-      Node getprop = lastChild.getFirstChild();
-      if (getprop == null || !getprop.isGetProp()) {
-        return false;
-      }
-      Node name = getprop.getFirstChild();
-      if (name == null || !name.isName()) {
-        return false;
-      }
-      return "wiz".equals(name.getString());
-    }
-
-    private static ConformanceResult checkCtorProperties(ObjectTypeI type) {
-      for (String propertyName : type.getOwnPropertyNames()) {
-        JSDocInfo docInfo = type.getOwnPropertyJSDocInfo(propertyName);
-        Node scriptNode = getScriptNode(type.getOwnPropertyDefSite(propertyName));
-        ConformanceResult result = visibilityAtDeclarationOrFileoverview(
-            docInfo, scriptNode);
-        if (result != ConformanceResult.CONFORMANCE) {
-          return result;
-        }
-      }
-      return ConformanceResult.CONFORMANCE;
-    }
-
-    @Nullable private static Node getScriptNode(Node start) {
-      for (Node up : start.getAncestors()) {
-        if (up.isScript()) {
-          return up;
-        }
-      }
-      return null;
-    }
-
-    private static ConformanceResult visibilityAtDeclarationOrFileoverview(
-        @Nullable JSDocInfo declaredJsDoc, @Nullable Node scriptNode) {
-      if (declaredJsDoc != null
-          && (declaredJsDoc.getVisibility() != Visibility.INHERITED
-              || declaredJsDoc.isOverride())) {
-        return ConformanceResult.CONFORMANCE;
-      } else if (scriptNode != null
-          && scriptNode.getJSDocInfo() != null
-          && scriptNode.getJSDocInfo().getVisibility() != Visibility.INHERITED) {
-        return ConformanceResult.CONFORMANCE;
-      } else {
-        return ConformanceResult.VIOLATION;
-      }
     }
   }
 }

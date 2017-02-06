@@ -33,6 +33,8 @@ import com.google.javascript.rhino.Node;
  *
  * This reduces the generated code size but changes the semantics because f
  * will be defined before its definition is reached.
+ * Also, in ES6+, "var f" is visible in the entire function scope, whereas
+ * "function f" is block scoped, which may cause issues.
  *
  */
 class CollapseAnonymousFunctions implements CompilerPass {
@@ -62,10 +64,8 @@ class CollapseAnonymousFunctions implements CompilerPass {
       // definitions are added to scopes before the start of execution.
 
       Node grandparent = parent.getParent();
-      if (!(parent.isScript() ||
-            grandparent != null &&
-            grandparent.isFunction() &&
-            parent.isBlock())) {
+      if (!(parent.isScript()
+          || grandparent != null && grandparent.isFunction() && parent.isNormalBlock())) {
         return;
       }
 

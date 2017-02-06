@@ -2288,9 +2288,9 @@ public class JSTypeTest extends BaseJSTypeTestCase {
     assertTrue(STRING_OBJECT_TYPE.canTestForShallowEqualityWith(UNKNOWN_TYPE));
 
     // properties (ECMA-262 page 98 - 106)
-    assertEquals(23, STRING_OBJECT_TYPE.getImplicitPrototype().
+    assertEquals(24, STRING_OBJECT_TYPE.getImplicitPrototype().
         getPropertiesCount());
-    assertEquals(24, STRING_OBJECT_TYPE.getPropertiesCount());
+    assertEquals(25, STRING_OBJECT_TYPE.getPropertiesCount());
 
     assertReturnTypeEquals(STRING_TYPE,
         STRING_OBJECT_TYPE.getPropertyType("toString"));
@@ -2318,6 +2318,8 @@ public class JSTypeTest extends BaseJSTypeTestCase {
         STRING_OBJECT_TYPE.getPropertyType("slice"));
     assertReturnTypeEquals(ARRAY_TYPE,
         STRING_OBJECT_TYPE.getPropertyType("split"));
+    assertReturnTypeEquals(STRING_TYPE,
+        STRING_OBJECT_TYPE.getPropertyType("substr"));
     assertReturnTypeEquals(STRING_TYPE,
         STRING_OBJECT_TYPE.getPropertyType("substring"));
     assertReturnTypeEquals(STRING_TYPE,
@@ -5752,8 +5754,11 @@ public class JSTypeTest extends BaseJSTypeTestCase {
         objType.defineDeclaredProperty(propName, UNKNOWN_TYPE, null);
         objType.defineDeclaredProperty("allHaz", UNKNOWN_TYPE, null);
 
-        assertTypeEquals(type,
-            registry.getGreatestSubtypeWithProperty(type, propName));
+        // We exclude {a: number, b: string} because, for inline record types,
+        // we register their properties on a sentinel object literal in the registry.
+        if (!type.equals(this.recordType)) {
+          assertTypeEquals(type, registry.getGreatestSubtypeWithProperty(type, propName));
+        }
 
         assertTypeEquals(NO_TYPE,
             registry.getGreatestSubtypeWithProperty(type, "GRRR"));

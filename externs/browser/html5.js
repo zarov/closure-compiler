@@ -58,6 +58,15 @@ HTMLCanvasElement.prototype.width;
 HTMLCanvasElement.prototype.height;
 
 /**
+ * @see https://www.w3.org/TR/html5/scripting-1.html#dom-canvas-toblob
+ * @param {function(!Blob)} callback
+ * @param {string=} opt_type
+ * @param {...*} var_args
+ * @throws {Error}
+ */
+HTMLCanvasElement.prototype.toBlob = function(callback, opt_type, var_args) {};
+
+/**
  * @param {string=} opt_type
  * @param {...*} var_args
  * @return {string}
@@ -529,7 +538,8 @@ CanvasRenderingContext2D.prototype.setLineDash;
 CanvasRenderingContext2D.prototype.fillColor;
 
 /**
- * @type {string}
+ * @type {string|!CanvasGradient|!CanvasPattern}
+ * @see https://html.spec.whatwg.org/multipage/scripting.html#fill-and-stroke-styles:dom-context-2d-fillstyle
  * @implicitCast
  */
 CanvasRenderingContext2D.prototype.fillStyle;
@@ -568,7 +578,8 @@ CanvasRenderingContext2D.prototype.shadowOffsetX;
 CanvasRenderingContext2D.prototype.shadowOffsetY;
 
 /**
- * @type {string}
+ * @type {string|!CanvasGradient|!CanvasPattern}
+ * @see https://html.spec.whatwg.org/multipage/scripting.html#fill-and-stroke-styles:dom-context-2d-strokestyle
  * @implicitCast
  */
 CanvasRenderingContext2D.prototype.strokeStyle;
@@ -806,8 +817,21 @@ Window.prototype.openDatabase =
 
 /**
  * @type {boolean}
+ * @see https://www.w3.org/TR/html5/embedded-content-0.html#dom-img-complete
  */
 HTMLImageElement.prototype.complete;
+
+/**
+ * @type {number}
+ * @see https://www.w3.org/TR/html5/embedded-content-0.html#dom-img-naturalwidth
+ */
+HTMLImageElement.prototype.naturalWidth;
+
+/**
+ * @type {number}
+ * @see https://www.w3.org/TR/html5/embedded-content-0.html#dom-img-naturalheight
+ */
+HTMLImageElement.prototype.naturalHeight;
 
 /**
  * @type {string}
@@ -1305,6 +1329,21 @@ HTMLElement.prototype.hidden;
 HTMLElement.prototype.spellcheck;
 
 /**
+ * @see https://dom.spec.whatwg.org/#dictdef-getrootnodeoptions
+ * @typedef {{
+ *   composed: boolean
+ * }}
+ */
+var GetRootNodeOptions;
+
+/**
+ * @see https://dom.spec.whatwg.org/#dom-node-getrootnode
+ * @param {GetRootNodeOptions=} opt_options
+ * @return {?Node}
+ */
+Node.prototype.getRootNode = function(opt_options) {};
+
+/**
  * @see http://www.w3.org/TR/components-intro/
  * @return {!ShadowRoot}
  */
@@ -1746,6 +1785,11 @@ TextTrack.prototype.activeCues;
 TextTrack.prototype.cues;
 
 /**
+ * @type {string}
+ */
+TextTrack.prototype.mode;
+
+/**
  * @override
  * @return {undefined}
  */
@@ -1904,6 +1948,33 @@ function MediaError() {}
 
 /** @type {number} */
 MediaError.prototype.code;
+
+/**
+ * The fetching process for the media resource was aborted by the user agent at
+ * the user's request.
+ * @type {number}
+ */
+MediaError.MEDIA_ERR_ABORTED;
+
+/**
+ * A network error of some description caused the user agent to stop fetching
+ * the media resource, after the resource was established to be usable.
+ * @type {number}
+ */
+MediaError.MEDIA_ERR_NETWORK;
+
+/**
+ * An error of some description occurred while decoding the media resource,
+ * after the resource was established to be usable.
+ * @type {number}
+ */
+MediaError.MEDIA_ERR_DECODE;
+
+/**
+ * The media resource indicated by the src attribute was not suitable.
+ * @type {number}
+ */
+MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED;
 
 // HTML5 MessageChannel
 /**
@@ -2663,9 +2734,39 @@ XMLHttpRequest.prototype.withCredentials;
 
 /**
  * @type {?function(!ProgressEvent): void}
+ * @see https://xhr.spec.whatwg.org/#handler-xhr-onloadstart
+ */
+XMLHttpRequest.prototype.onloadstart;
+
+/**
+ * @type {?function(!ProgressEvent): void}
  * @see https://dvcs.w3.org/hg/xhr/raw-file/tip/Overview.html#handler-xhr-onprogress
  */
 XMLHttpRequest.prototype.onprogress;
+
+/**
+ * @type {?function(!ProgressEvent): void}
+ * @see https://xhr.spec.whatwg.org/#handler-xhr-onabort
+ */
+XMLHttpRequest.prototype.onabort;
+
+/**
+ * @type {?function(!ProgressEvent): void}
+ * @see https://xhr.spec.whatwg.org/#handler-xhr-onload
+ */
+XMLHttpRequest.prototype.onload;
+
+/**
+ * @type {?function(!ProgressEvent): void}
+ * @see https://xhr.spec.whatwg.org/#handler-xhr-ontimeout
+ */
+XMLHttpRequest.prototype.ontimeout;
+
+/**
+ * @type {?function(!ProgressEvent): void}
+ * @see https://xhr.spec.whatwg.org/#handler-xhr-onloadend
+ */
+XMLHttpRequest.prototype.onloadend;
 
 /**
  * @type {XMLHttpRequestUpload}
@@ -3171,6 +3272,9 @@ Document.prototype.webkitIsFullScreen;
 
 Document.prototype.webkitCancelFullScreen = function() {};
 
+/** @type {boolean} */
+Document.prototype.webkitFullscreenEnabled;
+
 /** @type {Element} */
 Document.prototype.webkitCurrentFullScreenElement;
 
@@ -3263,6 +3367,11 @@ MutationObserver.prototype.observe = function(target, options) {};
 MutationObserver.prototype.disconnect = function() {};
 
 /**
+ * @return {!Array<!MutationRecord>}
+ */
+MutationObserver.prototype.takeRecords = function() {};
+
+/**
  * @type {function(new:MutationObserver, function(Array<MutationRecord>))}
  */
 Window.prototype.WebKitMutationObserver;
@@ -3324,7 +3433,7 @@ Document.prototype.msHidden;
  *     can do here as it allows the return value to be annotated properly
  *     at the call site.
  */
-Document.prototype.registerElement;
+Document.prototype.registerElement = function(type, options) {};
 
 /**
  * This method is deprecated and should be removed by the end of 2014.
@@ -3333,7 +3442,7 @@ Document.prototype.registerElement;
  * @param {string} type
  * @param {{extends: (string|undefined), prototype: (Object|undefined)}} options
  */
-Document.prototype.register;
+Document.prototype.register = function(type, options) {};
 
 /**
  * @type {!FontFaceSet}
@@ -3817,7 +3926,60 @@ HTMLDataListElement.prototype.options;
  */
 function HTMLOutputElement() {}
 
-// TODO(jakubvrana): Add HTMLOutputElement properties.
+/**
+ * @const {!DOMTokenList}
+ */
+HTMLOutputElement.prototype.htmlFor;
+
+/**
+ * @type {HTMLFormElement}
+ */
+HTMLOutputElement.prototype.form;
+
+/**
+ * @type {string}
+ */
+HTMLOutputElement.prototype.name;
+
+/**
+ * @const {string}
+ */
+HTMLOutputElement.prototype.type;
+
+/**
+ * @type {string}
+ */
+HTMLOutputElement.prototype.defaultValue;
+
+/**
+ * @type {string}
+ */
+HTMLOutputElement.prototype.value;
+
+/**
+ * @const {NodeList<!HTMLLabelElement>}
+ */
+HTMLOutputElement.prototype.labels;
+
+/** @type {string} */
+HTMLOutputElement.prototype.validationMessage;
+
+/**
+ * @const {ValidityState}
+ */
+HTMLOutputElement.prototype.validity;
+
+/** @type {boolean} */
+HTMLOutputElement.prototype.willValidate;
+
+/** @return {boolean} */
+HTMLOutputElement.prototype.checkValidity = function() {};
+
+/** @return {boolean} */
+HTMLOutputElement.prototype.reportValidity = function() {};
+
+/** @param {string} message */
+HTMLOutputElement.prototype.setCustomValidity = function(message) {};
 
 
 
@@ -4033,6 +4195,7 @@ Navigator.prototype.plugins;
  */
 Navigator.prototype.javaEnabled = function() {};
 
+
 /**
  * @constructor
  * @implements {IObject<(string|number),!Plugin>}
@@ -4123,4 +4286,3 @@ Plugin.prototype.length;
 
 /** @type {string} */
 Plugin.prototype.name;
-

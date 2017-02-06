@@ -180,7 +180,7 @@ public abstract class AbstractCompiler implements SourceExcerptProvider {
 
   /**
    * Gets all types that are used implicitly as a
-   * matching structural interface type. These are
+   * matching interface type. These are
    * recorded as TypeMismatchs only for convenience
    */
   abstract Iterable<TypeMismatch> getImplicitInterfaceUses();
@@ -371,7 +371,7 @@ public abstract class AbstractCompiler implements SourceExcerptProvider {
   /**
    * Returns the root node of the AST, which includes both externs and source.
    */
-  abstract Node getRoot();
+  public abstract Node getRoot();
 
   abstract CompilerOptions getOptions();
 
@@ -469,6 +469,12 @@ public abstract class AbstractCompiler implements SourceExcerptProvider {
    * GatherExternProperties pass was not run yet.
    */
   abstract Set<String> getExternProperties();
+
+  /**
+   * Adds a {@link SourceMapInput} for the given {@code sourceFileName}, to be used for error
+   * reporting and source map combining.
+   */
+  public abstract void addInputSourceMap(String name, SourceMapInput sourceMap);
 
   abstract void addComments(String filename, List<Comment> comments);
 

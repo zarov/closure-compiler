@@ -16,12 +16,11 @@
 
 package com.google.javascript.jscomp;
 
+import com.google.common.collect.HashBasedTable;
+import com.google.common.collect.Table;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.rhino.Node;
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -42,7 +41,7 @@ public final class Es6RenameVariablesInParamLists extends AbstractPostOrderCallb
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     // Arrow functions without blocked body cannot have declarations in the body
-    if (!n.isFunction() || !n.getLastChild().isBlock()) {
+    if (!n.isFunction() || !n.getLastChild().isNormalBlock()) {
       return;
     }
 
@@ -55,8 +54,8 @@ public final class Es6RenameVariablesInParamLists extends AbstractPostOrderCallb
           return true;
         }
 
-        if (parent.isDefaultValue() && n == parent.getLastChild()
-            || parent.isComputedProp() && n == parent.getFirstChild()) {
+        if ((parent.isDefaultValue() && n == parent.getLastChild())
+            || (parent.isComputedProp() && n == parent.getFirstChild())) {
           NodeTraversal.traverseEs6(compiler, n, collector);
           return false;
         }
@@ -68,18 +67,17 @@ public final class Es6RenameVariablesInParamLists extends AbstractPostOrderCallb
     Es6SyntacticScopeCreator creator = new Es6SyntacticScopeCreator(compiler);
     Scope fScope = creator.createScope(n, t.getScope());
     Scope fBlockScope = creator.createScope(block, fScope);
-    Map<String, String> currFuncRenameMap = new HashMap<>();
+    Table<Node, String, String> renameTable = HashBasedTable.create();
     for (Var var : fBlockScope.getVarIterable()) {
       String oldName = var.getName();
       if (collector.currFuncReferences.contains(oldName)
-          && !currFuncRenameMap.containsKey(oldName)) {
-        currFuncRenameMap.put(
+          && !renameTable.contains(fBlockScope.rootNode, oldName)) {
+        renameTable.put(fBlockScope.rootNode,
             oldName, oldName + "$" + compiler.getUniqueNameIdSupplier().get());
       }
     }
-    Map<Node, Map<String, String>> renameMap = new LinkedHashMap<>();
-    renameMap.put(fBlockScope.rootNode, currFuncRenameMap);
-    new NodeTraversal(compiler, new Es6RenameReferences(renameMap))
+    new NodeTraversal(
+            compiler, new Es6RenameReferences(renameTable), new Es6SyntacticScopeCreator(compiler))
         .traverseInnerNode(block, block.getParent(), fScope);
   }
 

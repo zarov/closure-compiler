@@ -125,7 +125,7 @@ class SyntacticScopeCreator implements ScopeCreator {
    * Scans and gather variables declarations under a Node
    */
   private void scanVars(Node n) {
-    switch (n.getType()) {
+    switch (n.getToken()) {
       case VAR:
         // Declare all variables. e.g. var x = 1, y, z;
         for (Node child = n.getFirstChild();
@@ -150,7 +150,7 @@ class SyntacticScopeCreator implements ScopeCreator {
         return;   // should not examine function's children
 
       case CATCH:
-        Preconditions.checkState(n.getChildCount() == 2, n);
+        Preconditions.checkState(n.hasTwoChildren(), n);
         // The first child is the catch var and the second child
         // is the code block.
 

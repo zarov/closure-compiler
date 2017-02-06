@@ -88,7 +88,7 @@ public class J2clPropertyInlinerPass implements CompilerPass {
         Preconditions.checkArgument(objectLit.isObjectLit());
         getKey.getParent().getParent().detach();
         compiler.reportCodeChange();
-        if (objectLit.getChildCount() == 0) {
+        if (!objectLit.hasChildren()) {
           // Remove the whole Object.defineProperties call if there are no properties left.
           objectLit.getParent().getParent().detach();
         }
@@ -106,12 +106,12 @@ public class J2clPropertyInlinerPass implements CompilerPass {
         return false;
       }
       Node getFunction = getKey.getFirstChild();
-      if (!getFunction.hasChildren() || !getFunction.getLastChild().isBlock()) {
+      if (!getFunction.hasChildren() || !getFunction.getLastChild().isNormalBlock()) {
         return false;
       }
       Node getBlock = getFunction.getLastChild();
       if (!getBlock.hasChildren()
-          || getBlock.getChildCount() != 1
+          || !getBlock.hasOneChild()
           || !getBlock.getFirstChild().isReturn()) {
         return false;
       }
@@ -124,7 +124,7 @@ public class J2clPropertyInlinerPass implements CompilerPass {
           || !multiExpression.getSecondChild().isGetProp()) {
         return false;
       }
-      Node clinitFunction = multiExpression.getFirstChild().getFirstChild();
+      Node clinitFunction = multiExpression.getFirstFirstChild();
       Node internalProp = multiExpression.getSecondChild();
       if (!clinitFunction.matchesQualifiedName(className + ".$clinit")) {
         return false;
@@ -147,25 +147,25 @@ public class J2clPropertyInlinerPass implements CompilerPass {
       }
       Node setFunction = setKey.getFirstChild();
       if (!setFunction.hasChildren()
-          || !setFunction.getLastChild().isBlock()
+          || !setFunction.getLastChild().isNormalBlock()
           || !setFunction.getSecondChild().isParamList()) {
         return false;
       }
-      if (setFunction.getSecondChild().getChildCount() != 1) {
+      if (!setFunction.getSecondChild().hasOneChild()) {
         // There is a single parameter "value".
         return false;
       }
       Node setBlock = setFunction.getLastChild();
       if (!setBlock.hasChildren()
           || !setBlock.getFirstChild().isExprResult()
-          || !setBlock.getFirstChild().getFirstChild().isComma()) {
+          || !setBlock.getFirstFirstChild().isComma()) {
         return false;
       }
-      Node multiExpression = setBlock.getFirstChild().getFirstChild();
+      Node multiExpression = setBlock.getFirstFirstChild();
       if (multiExpression.getChildCount() != 2 || !multiExpression.getSecondChild().isAssign()) {
         return false;
       }
-      Node clinitFunction = multiExpression.getFirstChild().getFirstChild();
+      Node clinitFunction = multiExpression.getFirstFirstChild();
       if (!clinitFunction.matchesQualifiedName(className + ".$clinit")) {
         return false;
       }

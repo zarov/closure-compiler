@@ -19,6 +19,7 @@ package com.google.javascript.jscomp.parsing;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.javascript.jscomp.parsing.Config.LanguageMode;
+import com.google.javascript.jscomp.parsing.Config.StrictMode;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.SimpleSourceFile;
@@ -788,7 +789,9 @@ public final class AttachJsdocsTest extends BaseJSTypeTestCase {
             mode,
             Config.JsDocParsing.INCLUDE_DESCRIPTIONS_NO_WHITESPACE,
             Config.RunMode.KEEP_GOING,
-            null);
+            null,
+            true,
+            StrictMode.SLOPPY);
     Node script = ParserRunner.parse(
         new SimpleSourceFile("input", false),
         source,

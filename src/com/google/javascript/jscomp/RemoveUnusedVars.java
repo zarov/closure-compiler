@@ -24,7 +24,6 @@ import com.google.javascript.jscomp.DefinitionsRemover.Definition;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -349,7 +348,7 @@ class RemoveUnusedVars
     Preconditions.checkState(n.isFunction(), n);
 
     final Node body = n.getLastChild();
-    Preconditions.checkState(body.getNext() == null && body.isBlock(), body);
+    Preconditions.checkState(body.getNext() == null && body.isNormalBlock(), body);
 
     Scope fnScope = SyntacticScopeCreator.makeUntyped(compiler).createScope(n, parentScope);
     traverseNode(body, n, fnScope);
@@ -385,7 +384,7 @@ class RemoveUnusedVars
     // Rather than create a new option for this, we assume that if the user
     // is removing globals, then it's OK to remove unused function args.
     //
-    // See http://code.google.com/p/closure-compiler/issues/detail?id=253
+    // See http://blickly.github.io/closure-compiler-issues/#253
     if (!removeGlobals) {
       return;
     }
@@ -398,7 +397,7 @@ class RemoveUnusedVars
       return;
     }
 
-    Node argList = getFunctionArgList(function);
+    Node argList = NodeUtil.getFunctionParameters(function);
     boolean modifyCallers = modifyCallSites
         && callSiteOptimizer.canModifyCallers(function);
     if (!modifyCallers) {
@@ -418,14 +417,6 @@ class RemoveUnusedVars
     }
   }
 
-
-  /**
-   * @return the LP node containing the function parameters.
-   */
-  private static Node getFunctionArgList(Node function) {
-    return function.getSecondChild();
-  }
-
   private static class CallSiteOptimizer {
     private final AbstractCompiler compiler;
     private final DefinitionUseSiteFinder defFinder;
@@ -442,7 +433,7 @@ class RemoveUnusedVars
     public void optimize(Scope fnScope, Set<Var> referenced) {
       Node function = fnScope.getRootNode();
       Preconditions.checkState(function.isFunction());
-      Node argList = getFunctionArgList(function);
+      Node argList = NodeUtil.getFunctionParameters(function);
 
       // In this path we try to modify all the call sites to remove unused
       // function parameters.
@@ -462,7 +453,7 @@ class RemoveUnusedVars
       }
       for (Node n : toReplaceWithZero) {
         compiler.reportChangeToEnclosingScope(n);
-        n.getParent().replaceChild(n, IR.number(0).srcref(n));
+        n.replaceWith(IR.number(0).srcref(n));
       }
     }
 
@@ -747,8 +738,7 @@ class RemoveUnusedVars
           boolean assignedToUnknownValue = false;
           boolean hasPropertyAssign = false;
 
-          if (var.getParentNode().isVar() &&
-              !NodeUtil.isForIn(var.getParentNode().getParent())) {
+          if (var.getParentNode().isVar() && !var.getParentNode().getParent().isForIn()) {
             Node value = var.getInitialValue();
             assignedToUnknownValue = value != null &&
                 !NodeUtil.isLiteralValue(value, true);
@@ -846,9 +836,7 @@ class RemoveUnusedVars
           toRemove.getFirstChild().setString("");
         }
         // Don't remove bleeding functions.
-      } else if (parent != null &&
-          parent.isFor() &&
-          parent.getChildCount() < 4) {
+      } else if (parent != null && parent.isForIn()) {
         // foreach iterations have 3 children. Leave them alone.
       } else if (toRemove.isVar() &&
           nameNode.hasChildren() &&
@@ -856,13 +844,12 @@ class RemoveUnusedVars
         // If this is a single var declaration, we can at least remove the
         // declaration itself and just leave the value, e.g.,
         // var a = foo(); => foo();
-        if (toRemove.getChildCount() == 1) {
+        if (toRemove.hasOneChild()) {
           compiler.reportChangeToEnclosingScope(toRemove);
           parent.replaceChild(toRemove,
               IR.exprResult(nameNode.removeFirstChild()));
         }
-      } else if (toRemove.isVar() &&
-          toRemove.getChildCount() > 1) {
+      } else if (toRemove.isVar() && toRemove.hasMoreThanOneChild()) {
         // For var declarations with multiple names (i.e. var a, b, c),
         // only remove the unreferenced name
         compiler.reportChangeToEnclosingScope(toRemove);

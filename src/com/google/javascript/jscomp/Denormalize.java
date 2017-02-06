@@ -81,7 +81,7 @@ class Denormalize implements CompilerPass, Callback {
     Node nextSibling = n.getNext();
     if (nextSibling == null) {
       return;
-    } else if (NodeUtil.isForIn(nextSibling)) {
+    } else if (nextSibling.isForIn()) {
       Node forNode = nextSibling;
       Node forVar = forNode.getFirstChild();
       if (forVar.isName()
@@ -96,8 +96,7 @@ class Denormalize implements CompilerPass, Callback {
           compiler.reportCodeChange();
         }
       }
-    } else if (nextSibling.isFor()
-        && nextSibling.getFirstChild().isEmpty()) {
+    } else if (nextSibling.isVanillaFor() && nextSibling.getFirstChild().isEmpty()) {
 
       // Does the current node contain an in operator?  If so, embedding
       // the expression in a for loop can cause some JavaScript parsers (such
@@ -136,7 +135,7 @@ class Denormalize implements CompilerPass, Callback {
       Node op = n.getLastChild();
       Token assignOp = NodeUtil.getAssignOpFromOp(op);
       if (n.getFirstChild().getString().equals(op.getFirstChild().getString())) {
-        op.setType(assignOp);
+        op.setToken(assignOp);
         Node opDetached = op.detach();
         opDetached.setJSDocInfo(n.getJSDocInfo());
         parent.replaceChild(n, opDetached);

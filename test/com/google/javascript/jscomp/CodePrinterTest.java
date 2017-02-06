@@ -22,7 +22,6 @@ import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -68,7 +67,8 @@ public final class CodePrinterTest extends CodePrinterTestBase {
     assertPrint("function foo(){throw 'error';}",
         "function foo(){throw\"error\";}");
 
-    assertPrint("var x = 10; { var y = 20; }", "var x=10;var y=20");
+    // The code printer does not eliminate unnecessary blocks.
+    assertPrint("var x = 10; { var y = 20; }", "var x=10;{var y=20}");
 
     assertPrint("while (x-- > 0);", "while(x-- >0);");
     assertPrint("x-- >> 1", "x-- >>1");
@@ -259,6 +259,12 @@ public final class CodePrinterTest extends CodePrinterTestBase {
     assertPrint("if(x){if(y){};;;}", "if(x)if(y);");
   }
 
+  public void testLetConstInIf() {
+    languageMode = LanguageMode.ECMASCRIPT_NEXT;
+    assertPrint("if (true) { let x; };", "if(true){let x}");
+    assertPrint("if (true) { const x = 0; };", "if(true){const x=0}");
+  }
+
   public void testPrintBlockScopedFunctions() {
     languageMode = LanguageMode.ECMASCRIPT6;
     // Safari 3 needs a "{" around a single function
@@ -335,6 +341,11 @@ public final class CodePrinterTest extends CodePrinterTestBase {
     assertPrintSame("[[[[a]]]]=[[[[1]]]]");
   }
 
+  public void testPrettyPrintArrayPattern() {
+    languageMode = LanguageMode.ECMASCRIPT6;
+    assertPrettyPrint("let [a,b,c]=foo();", "let [a, b, c] = foo();\n");
+  }
+
   public void testPrintObjectPatternVar() {
     languageMode = LanguageMode.ECMASCRIPT6;
     assertPrintSame("var {a}=foo()");
@@ -376,6 +387,11 @@ public final class CodePrinterTest extends CodePrinterTestBase {
     assertPrintSame("({a:b=2}=foo())");
     assertPrintSame("({a,b:{c=2}}=foo())");
     assertPrintSame("({a:{b=2},c}=foo())");
+  }
+
+  public void testPrettyPrintObjectPattern() {
+    languageMode = LanguageMode.ECMASCRIPT6;
+    assertPrettyPrint("const {a,b,c}=foo();", "const {a, b, c} = foo();\n");
   }
 
   public void testPrintMixedDestructuring() {
@@ -824,7 +840,7 @@ public final class CodePrinterTest extends CodePrinterTestBase {
     assertPrettyPrint("function foo() { return \"foo\"; }",
         "function foo() {\n  return \"foo\";\n}\n");
     assertPrettyPrint("throw \"foo\";",
-        "throw \"foo\";");
+        "throw \"foo\";\n");
 
     // Test that loops properly have spaces inserted.
     assertPrettyPrint("do{ alert(); } while(true);",
@@ -979,6 +995,35 @@ public final class CodePrinterTest extends CodePrinterTestBase {
         "var f = function() {\n" +
             "  return --b;\n" +
             "};\n");
+  }
+
+  public void testPrettyPrinter_varLetConst() throws Exception {
+    assertPrettyPrint("var x=0;", "var x = 0;\n");
+
+    languageMode = LanguageMode.ECMASCRIPT6;
+
+    assertPrettyPrint("const x=0;", "const x = 0;\n");
+    assertPrettyPrint("let x=0;", "let x = 0;\n");
+  }
+
+  public void testPrettyPrinter_number() throws Exception {
+    assertPrettyPrintSame("var x = 10;\n");
+    assertPrettyPrintSame("var x = 1.;\n");
+    assertPrettyPrint("var x = 0xFE;", "var x = 254;\n");
+    assertPrettyPrintSame(
+        "var x = 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000;\n");
+    assertPrettyPrintSame("f(10000);\n");
+    assertPrettyPrintSame("var x = -10000;\n");
+    assertPrettyPrintSame("var x = y - -10000;\n");
+    assertPrettyPrintSame("f(-10000);\n");
+    assertPrettyPrintSame("x < 2592000;\n");
+    assertPrettyPrintSame("x < 1000.000;\n");
+    assertPrettyPrintSame("x < 1000.912;\n");
+    assertPrettyPrintSame("var x = 1E20;\n");
+    assertPrettyPrintSame("var x = 1E1;\n");
+    assertPrettyPrintSame("var x = void 0;\n");
+    assertPrettyPrintSame("foo(-0);\n");
+    assertPrettyPrint("var x = 4-1000;", "var x = 4 - 1000;\n");
   }
 
   public void testTypeAnnotations() {
@@ -1244,6 +1289,10 @@ public final class CodePrinterTest extends CodePrinterTestBase {
         "var x;",
         "");
 
+    assertPrettyPrint(js, js);
+  }
+
+  private void assertPrettyPrintSame(String js) {
     assertPrettyPrint(js, js);
   }
 
@@ -1711,8 +1760,8 @@ public final class CodePrinterTest extends CodePrinterTestBase {
     assertPrint("var x = - (2);", "var x=-2");
   }
 
-  public void testStrict() {
-    String result = new CodePrinter.Builder(parse("var x", true))
+  private CodePrinter.Builder defaultBuilder(Node jsRoot) {
+    return new CodePrinter.Builder(jsRoot)
         .setCompilerOptions(newCompilerOptions(new CompilerOptionBuilder() {
           @Override
           void setOptions(CompilerOptions options) {
@@ -1722,10 +1771,17 @@ public final class CodePrinterTest extends CodePrinterTestBase {
           }
         }))
         .setOutputTypes(false)
-        .setTypeRegistry(lastCompiler.getTypeIRegistry())
-        .setTagAsStrict(true)
-        .build();
+        .setTypeRegistry(lastCompiler.getTypeIRegistry());
+  }
+
+  public void testStrict() {
+    String result = defaultBuilder(parse("var x", true)).setTagAsStrict(true).build();
     assertEquals("'use strict';var x", result);
+  }
+
+  public void testExterns() {
+    String result = defaultBuilder(parse("var x", true)).setTagAsExterns(true).build();
+    assertEquals("/** @externs */\nvar x", result);
   }
 
   public void testArrayLiteral() {
@@ -2118,6 +2174,8 @@ public final class CodePrinterTest extends CodePrinterTestBase {
     assertPrint("(()=>a),b", "()=>a,b");
     assertPrint("()=>(a=b)", "()=>a=b");
     assertPrintSame("[1,2].forEach((x)=>y)");
+    assertPrintSame("()=>({a:1})");
+    assertPrintSame("()=>{return 1}");
   }
 
   public void testAsyncFunction() {
@@ -2197,9 +2255,63 @@ public final class CodePrinterTest extends CodePrinterTestBase {
             "  var f = () => {",
             "    alert(1);",
             "    alert(2);",
-            "  }",
+            "  };",
             "}",
             ""));
+  }
+
+  public void testPrettyPrint_switch() throws Exception {
+    assertPrettyPrint("switch(something){case 0:alert(0);break;case 1:alert(1);break}",
+        LINE_JOINER.join(
+            "switch(something) {",
+            "  case 0:",
+            "    alert(0);",
+            "    break;",
+            "  case 1:",
+            "    alert(1);",
+            "    break;",
+            "}",
+            ""));
+  }
+
+  public void testBlocksInCaseArePreserved() throws Exception {
+    languageMode = LanguageMode.ECMASCRIPT6;
+    String js = LINE_JOINER.join(
+        "switch(something) {",
+        "  case 0:",
+        "    {",
+        "      const x = 1;",
+        "      break;",
+        "    }",
+        "  case 1:",
+        "    break;",
+        "  case 2:",
+        "    console.log(`case 2!`);",
+        "    {",
+        "      const x = 2;",
+        "      break;",
+        "    }",
+        "}",
+        "");
+    assertPrettyPrint(js, js);
+  }
+
+  public void testBlocksArePreserved() throws Exception {
+    languageMode = LanguageMode.ECMASCRIPT6;
+    String js = LINE_JOINER.join(
+        "console.log(0);",
+        "{",
+        "  let x = 1;",
+        "  console.log(x);",
+        "}",
+        "console.log(x);",
+        "");
+    assertPrettyPrint(js, js);
+  }
+
+  public void testBlocksNotPreserved() {
+    assertPrint("if (x) {};", "if(x);");
+    assertPrint("while (x) {};", "while(x);");
   }
 
   public void testDeclarations() {
@@ -2268,8 +2380,9 @@ public final class CodePrinterTest extends CodePrinterTestBase {
   }
 
   public void testTemplateLiteral() {
-    languageMode = LanguageMode.ECMASCRIPT6;
+    languageMode = LanguageMode.ECMASCRIPT_NEXT;
     assertPrintSame("`hello`");
+    assertPrintSame("`\\\\bhello`");
     assertPrint("`hel\rlo`", "`hel\\nlo`");
     assertPrint("`hel\r\nlo`", "`hel\\nlo`");
     assertPrint("`hello`\n'world'", "`hello`;\"world\"");
@@ -2306,10 +2419,9 @@ public final class CodePrinterTest extends CodePrinterTestBase {
     String expectedCode = ""
         + "var module$exports$foo$bar = {};\n"
         + "const STR = '3';\n"
-        + "function fn() {\n"
+        + "module$exports$foo$bar.fn = function fn() {\n"
         + "  alert(STR);\n"
-        + "}\n"
-        + "exports.fn = fn;\n";
+        + "};\n";
 
     CompilerOptions compilerOptions = new CompilerOptions();
     compilerOptions.setClosurePass(true);
@@ -2349,6 +2461,72 @@ public final class CodePrinterTest extends CodePrinterTestBase {
     compilerOptions.setLanguageIn(LanguageMode.ECMASCRIPT6);
     compilerOptions.setLanguageOut(LanguageMode.ECMASCRIPT5);
     checkWithOriginalName(code, expectedCode, compilerOptions);
+  }
+
+  public void testGoogScope() {
+    // TODO(mknichel): Function declarations need to be rewritten to match the original source
+    // instead of being assigned to a local variable with duplicate JS Doc.
+    String code = ""
+        + "goog.provide('foo.bar');\n"
+        + "goog.require('baz.qux.Quux');\n"
+        + "goog.require('foo.ScopedType');\n"
+        + "\n"
+        + "goog.scope(function() {\n"
+        + "var Quux = baz.qux.Quux;\n"
+        + "var ScopedType = foo.ScopedType;\n"
+        + "\n"
+        + "var STR = '3';\n"
+        + "/** @param {ScopedType} obj */\n"
+        + "function fn(obj) {\n"
+        + "  alert(STR);\n"
+        + "  alert(Quux.someProperty);\n"
+        + "}\n"
+        + "}); // goog.scope\n";
+    String expectedCode = ""
+        + "/** @const */ var $jscomp = {};\n"
+        + "/** @const */ $jscomp.scope = {};\n"
+        + "/** @const */ var foo = {};\n"
+        + "/** @const */ foo.bar = {};\n"
+        + "goog.provide('foo.bar');\n"
+        + "goog.require('baz.qux.Quux');\n"
+        + "goog.require('foo.ScopedType');\n"
+        + "/**\n"
+        + " @param {ScopedType} obj\n"
+        + " */\n"
+        + "var fn = /**\n"
+        + " @param {ScopedType} obj\n"
+        + " */\n"
+        + "function(obj) {\n"
+        + "  alert(STR);\n"
+        + "  alert(Quux.someProperty);\n"
+        + "};\n"
+        + "var STR = '3';\n";
+
+    CompilerOptions compilerOptions = new CompilerOptions();
+    compilerOptions.setClosurePass(true);
+    compilerOptions.setPreserveDetailedSourceInfo(true);
+    compilerOptions.setChecksOnly(true);
+    compilerOptions.setCheckTypes(true);
+    compilerOptions.setContinueAfterErrors(true);
+    compilerOptions.setPreserveGoogProvidesAndRequires(true);
+    Compiler compiler = new Compiler();
+    compiler.disableThreads();
+    compiler.compile(
+        ImmutableList.<SourceFile>of(), // Externs
+        ImmutableList.of(SourceFile.fromCode("test", code)),
+        compilerOptions);
+    Node node = compiler.getRoot().getLastChild().getFirstChild();
+
+    CompilerOptions codePrinterOptions = new CompilerOptions();
+    codePrinterOptions.setPreferSingleQuotes(true);
+    codePrinterOptions.setLineLengthThreshold(80);
+    codePrinterOptions.setPreserveTypeAnnotations(true);
+    codePrinterOptions.setUseOriginalNamesInOutput(true);
+    assertEquals(expectedCode, new CodePrinter.Builder(node)
+        .setCompilerOptions(codePrinterOptions)
+        .setPrettyPrint(true)
+        .setLineBreak(true)
+        .build());
   }
 
   private void checkWithOriginalName(

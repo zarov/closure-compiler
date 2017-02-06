@@ -20,7 +20,6 @@ import com.google.common.base.Preconditions;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.TypeI;
-
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -33,6 +32,8 @@ import java.util.Set;
  * these properties may be indirectly referenced using "for-in" or
  * "Object.keys".  This is the same assumption used with
  * RemoveUnusedPrototypeProperties but is slightly wider in scope.
+ *
+ * TODO(tomnguyen) Handle destructuring of objects/classes as cases where the field is used.
  *
  * @author johnlenz@google.com (John Lenz)
  */
@@ -78,6 +79,12 @@ class RemoveUnusedClassProperties
 
           Node parent = n.getParent();
           Node replacement;
+          /**
+           * Whether the parent of the GETPROP is replaced or GETPROP itself.
+           * In some cases the parent of GETPROP is an EXPRRESULT, while the replacement is always
+           * just a plain expression.
+           */
+          Boolean replaceParent = true;
           if (NodeUtil.isAssignmentOp(parent)) {
             Node assign = parent;
             Preconditions.checkState(assign != null
@@ -89,6 +96,9 @@ class RemoveUnusedClassProperties
           } else if (parent.isInc() || parent.isDec()) {
             compiler.reportChangeToEnclosingScope(parent);
             replacement = IR.number(0).srcref(parent);
+          } else if (parent.isExprResult()) {
+            replacement = IR.number(0).srcref(n);
+            replaceParent = false;
           } else {
             throw new IllegalStateException("unexpected: " + parent);
           }
@@ -107,7 +117,11 @@ class RemoveUnusedClassProperties
           }
 
           compiler.reportChangeToEnclosingScope(parent);
-          parent.getParent().replaceChild(parent, replacement);
+          if (replaceParent) {
+            parent.replaceWith(replacement);
+          } else {
+            parent.replaceChild(n, replacement);
+          }
         }
       }
     }
@@ -135,17 +149,29 @@ class RemoveUnusedClassProperties
          break;
        }
 
-       case OBJECTLIT: {
-         // Assume any object literal definition might be a reflection on the
-         // class property.
-         if (!NodeUtil.isObjectDefinePropertiesDefinition(n.getParent())) {
-           for (Node c : n.children()) {
-             used.add(c.getString());
-           }
-         }
-         break;
-       }
-
+      case OBJECTLIT:
+        {
+          // Assume any object literal definition might be a reflection on the
+          // class property.
+          if (!NodeUtil.isObjectDefinePropertiesDefinition(n.getParent())) {
+            for (Node c : n.children()) {
+              // Object literals can contain computed_prop fields.
+              if (!c.isComputedProp()) {
+                used.add(c.getString());
+              }
+            }
+          }
+          break;
+        }
+      case CLASS:
+        Node classMemberDefs = n.getLastChild();
+        for (Node m : classMemberDefs.children()) {
+          // Computed props are treated as unremovable for now.
+          if (!m.isComputedProp()) {
+            candidates.add(m);
+          }
+        }
+        break;
       case CALL:
         // Look for properties referenced through the property rename functions.
         Node target = n.getFirstChild();
@@ -196,13 +222,14 @@ class RemoveUnusedClassProperties
     // Rather than looking for cases that are uses, we assume all references are
     // pinning uses unless they are:
     //  - a simple assignment (x.a = 1)
+    //  - an expression statement (x.a;)
     //  - a compound assignment or increment (x++, x += 1) whose result is
     //    otherwise unused
 
     Node parent = n.getParent();
     if (n == parent.getFirstChild()) {
-      if (parent.isAssign()) {
-        // A simple assignment doesn't pin the property.
+      if (parent.isAssign() || parent.isExprResult()) {
+        // A simple assignment or expression statement doesn't pin the property.
         return false;
       } else if (NodeUtil.isAssignmentOp(parent)
             || parent.isInc() || parent.isDec()) {

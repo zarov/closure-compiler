@@ -25,7 +25,6 @@ import com.google.javascript.rhino.jstype.FunctionType;
 import com.google.javascript.rhino.jstype.JSType;
 import com.google.javascript.rhino.jstype.JSTypeNative;
 import com.google.javascript.rhino.jstype.ObjectType;
-
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -35,27 +34,27 @@ import java.util.TreeSet;
  */
 class TypedCodeGenerator extends CodeGenerator {
   private final TypeIRegistry registry;
+  private final JSDocInfoPrinter jsDocInfoPrinter;
 
   TypedCodeGenerator(
       CodeConsumer consumer, CompilerOptions options, TypeIRegistry registry) {
     super(consumer, options);
     Preconditions.checkNotNull(registry);
     this.registry = registry;
+    this.jsDocInfoPrinter = new JSDocInfoPrinter(options.getUseOriginalNamesInOutput());
   }
 
   @Override
   protected void add(Node n, Context context) {
     Node parent = n.getParent();
-    if (parent != null
-        && (parent.isBlock()
-            || parent.isScript())) {
+    if (parent != null && (parent.isNormalBlock() || parent.isScript())) {
       if (n.isFunction()) {
         add(getFunctionAnnotation(n));
       } else if (n.isExprResult()
           && n.getFirstChild().isAssign()) {
         Node assign = n.getFirstChild();
         if (NodeUtil.isNamespaceDecl(assign.getFirstChild())) {
-          add(JSDocInfoPrinter.print(assign.getJSDocInfo()));
+          add(jsDocInfoPrinter.print(assign.getJSDocInfo()));
         } else {
           Node rhs = assign.getLastChild();
           add(getTypeAnnotation(rhs));
@@ -63,7 +62,7 @@ class TypedCodeGenerator extends CodeGenerator {
       } else if (n.isVar()
           && n.getFirstFirstChild() != null) {
         if (NodeUtil.isNamespaceDecl(n.getFirstChild())) {
-          add(JSDocInfoPrinter.print(n.getJSDocInfo()));
+          add(jsDocInfoPrinter.print(n.getJSDocInfo()));
         } else {
           add(getTypeAnnotation(n.getFirstFirstChild()));
         }
@@ -125,7 +124,7 @@ class TypedCodeGenerator extends CodeGenerator {
     // parameters of the function type do not have the real parameter names.
     // FUNCTION
     //   NAME
-    //   LP
+    //   PARAM_LIST
     //     NAME param1
     //     NAME param2
     if (fnNode != null && fnNode.isFunction()) {

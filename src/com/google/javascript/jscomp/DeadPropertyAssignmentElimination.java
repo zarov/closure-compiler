@@ -21,11 +21,10 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
 import com.google.common.collect.Sets;
-import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.jscomp.NodeTraversal.Callback;
+import com.google.javascript.jscomp.NodeTraversal.FunctionCallback;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -33,7 +32,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.Set;
-
 import javax.annotation.Nullable;
 
 /**
@@ -83,25 +81,23 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
 
     Set<String> blacklistedPropNames = Sets.union(
         getterSetterCollector.propNames, compiler.getExternProperties());
-    NodeTraversal.traverseEs6(compiler, root, new FunctionVisitor(compiler, blacklistedPropNames));
+
+    NodeTraversal.traverseChangedFunctions(compiler, new FunctionVisitor(blacklistedPropNames));
   }
 
-  private static class FunctionVisitor extends AbstractPostOrderCallback {
-
-    private final AbstractCompiler compiler;
+  private static class FunctionVisitor implements FunctionCallback {
 
     /**
      * A set of properties names that are potentially unsafe to remove duplicate writes to.
      */
     private final Set<String> blacklistedPropNames;
 
-    FunctionVisitor(AbstractCompiler compiler, Set<String> blacklistedPropNames) {
-      this.compiler = compiler;
+    FunctionVisitor(Set<String> blacklistedPropNames) {
       this.blacklistedPropNames = blacklistedPropNames;
     }
 
     @Override
-    public void visit(NodeTraversal t, Node n, Node parent) {
+    public void enterFunction(AbstractCompiler compiler, Node n) {
       if (!n.isFunction()) {
         return;
       }
@@ -129,7 +125,7 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
             Node rhs = lhs.getNext();
             Node assignNode = lhs.getParent();
             rhs.detach();
-            assignNode.getParent().replaceChild(assignNode, rhs);
+            assignNode.replaceWith(rhs);
             compiler.reportCodeChange();
           }
         }
@@ -298,13 +294,13 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
 
       // Mark all properties as read when leaving a block since we haven't proven that the block
       // will execute.
-      if (n.isBlock()) {
+      if (n.isNormalBlock()) {
         visitBlock(n);
       }
     }
 
     private void visitBlock(Node blockNode) {
-      Preconditions.checkArgument(blockNode.isBlock());
+      Preconditions.checkArgument(blockNode.isNormalBlock());
 
       // We don't do flow analysis yet so we're going to assume everything written up to this
       // block is read.
@@ -412,6 +408,7 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
 
         case THROW:
         case FOR:
+        case FOR_IN:
         case SWITCH:
           // TODO(kevinoconnor): Switch/for statements need special consideration since they may
           // execute out of order.

@@ -16,6 +16,8 @@
 
 package com.google.javascript.jscomp;
 
+import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
+
 /**
  * @author johnlenz@google.com (John Lenz)
  */
@@ -38,6 +40,12 @@ public final class RemoveUnusedClassPropertiesTest extends CompilerTestCase {
   @Override
   protected CompilerPass getProcessor(Compiler compiler) {
     return new RemoveUnusedClassProperties(compiler, true);
+  }
+
+  @Override
+  public void setUp() throws Exception {
+    super.setUp();
+    setAcceptedLanguage(LanguageMode.ECMASCRIPT5);
   }
 
   public void testSimple1() {
@@ -103,6 +111,10 @@ public final class RemoveUnusedClassPropertiesTest extends CompilerTestCase {
     testSame("x = (f(), this.a += 2)");
   }
 
+  public void testAssignOpPrototype() {
+    test("SomeSideEffect().prototype.x = 0", "SomeSideEffect(), 0");
+  }
+
   public void testInc1() {
     // Increments and Decrements are handled similarly to compound assignments
     // but need a placeholder value when replaced.
@@ -125,6 +137,16 @@ public final class RemoveUnusedClassPropertiesTest extends CompilerTestCase {
     test("--this.a, f()", "0, f()");
     test("x = (--this.a, f())", "x = (0, f())");
     testSame("x = (f(), --this.a)");
+  }
+
+  public void testIncPrototype() {
+    test("SomeSideEffect().prototype.x++", "SomeSideEffect(), 0");
+  }
+
+  public void testExprResult() {
+    test("this.x", "0");
+    test("c.prototype.x", "0");
+    test("SomeSideEffect().prototype.x", "SomeSideEffect(),0");
   }
 
   public void testJSCompiler_renameProperty() {
@@ -320,7 +342,7 @@ public final class RemoveUnusedClassPropertiesTest extends CompilerTestCase {
   }
 
   public void testObjectDefineProperties_used_setter_removed() {
-    // TODO: Either remove fix this or document it as a limitation of advanced mode optimizations.
+    // TODO: Either remove, fix this, or document it as a limitation of advanced mode optimizations.
     enableTypeCheck();
 
     test(
@@ -333,4 +355,122 @@ public final class RemoveUnusedClassPropertiesTest extends CompilerTestCase {
             "Object.defineProperties(C, {});2"));
   }
 
+  public void testEs6GettersWithoutTranspilation() {
+    setAcceptedLanguage(LanguageMode.ECMASCRIPT6);
+    test("class C { get value() { return 0; } }", "class C {}");
+    testSame("class C { get value() { return 0; } } const x = (new C()).value");
+  }
+
+  public void testES6ClassComputedProperty() {
+    setAcceptedLanguage(LanguageMode.ECMASCRIPT6);
+    testSame("class C { ['test' + 3]() { return 0; } }");
+  }
+
+  public void testEs6SettersWithoutTranspilation() {
+    setAcceptedLanguage(LanguageMode.ECMASCRIPT6);
+    test("class C { set value(val) { this.internalVal = val; } }", "class C {}");
+
+    test(
+        "class C { set value(val) { this.internalVal = val; } } (new C()).value = 3;",
+        "class C { set value(val) { val; } } (new C()).value = 3;");
+    testSame(
+        LINE_JOINER.join(
+            "class C {",
+            "  set value(val) {",
+            "    this.internalVal = val;",
+            "  }",
+            "  get value() {",
+            "    return this.internalVal;",
+            "  }",
+            "}",
+            "const y = new C();",
+            "y.value = 3;",
+            "const x = y.value;"));
+  }
+
+  // All object literal fields are not removed, but the following
+  // tests assert that the pass does not fail.
+  public void testEs6EnhancedObjLiteralsComputedValuesNotRemoved() {
+    setAcceptedLanguage(LanguageMode.ECMASCRIPT6);
+    testSame(
+        LINE_JOINER.join(
+            "function getCar(make, model, value) {",
+            "  return {",
+            "    ['make' + make] : true",
+            "  };",
+            "}"));
+  }
+
+  public void testEs6EnhancedObjLiteralsMethodShortHandNotRemoved() {
+    setAcceptedLanguage(LanguageMode.ECMASCRIPT6);
+    testSame(
+        LINE_JOINER.join(
+            "function getCar(make, model, value) {",
+            "  return {",
+            "    getModel() {",
+            "      return model;",
+            "    }",
+            "  };",
+            "}"));
+  }
+
+  public void testEs6EnhancedObjLiteralsPropertyShorthand() {
+    setAcceptedLanguage(LanguageMode.ECMASCRIPT6);
+    testSame("function getCar(make, model, value) { return {model}; }");
+  }
+
+  public void testEs6GettersRemoval() {
+    enableTypeCheck();
+    test(
+        // This is the output of ES6->ES5 class getter converter.
+        // See Es6ToEs3ConverterTest.testEs5GettersAndSettersClasses test method.
+        LINE_JOINER.join(
+            "/** @constructor @struct */",
+            "var C = function() {};",
+            "/** @type {?} */",
+            "C.prototype.value;",
+            "$jscomp.global.Object.defineProperties(C.prototype, {",
+            "  value: {",
+            "    configurable: true,",
+            "    enumerable: true,",
+            "    /** @this {C} */",
+            "    get: function() {",
+            "      return 0;",
+            "    }",
+            "  }",
+            "});"),
+        LINE_JOINER.join(
+            "/** @constructor @struct */var C=function(){};",
+            "0;",
+            "$jscomp.global.Object.defineProperties(C.prototype, {});"));
+  }
+
+  public void testEs6SettersRemoval() {
+    enableTypeCheck();
+    test(
+        // This is the output of ES6->ES5 class setter converter.
+        // See Es6ToEs3ConverterTest.testEs5GettersAndSettersClasses test method.
+        LINE_JOINER.join(
+            "/** @constructor @struct */",
+            "var C = function() {};",
+            "/** @type {?} */",
+            "C.prototype.value;",
+            "/** @type {?} */",
+            "C.prototype.internalVal;",
+            "$jscomp.global.Object.defineProperties(C.prototype, {",
+            "  value: {",
+            "    configurable: true,",
+            "    enumerable: true,",
+            "    /** @this {C} */",
+            "    set: function(val) {",
+            "      this.internalVal = val;",
+            "    }",
+            "  }",
+            "});"),
+        LINE_JOINER.join(
+            "/** @constructor @struct */var C=function(){};",
+            "0;",
+            "0;",
+            "$jscomp.global.Object.defineProperties(C.prototype, {});"));
+  }
 }

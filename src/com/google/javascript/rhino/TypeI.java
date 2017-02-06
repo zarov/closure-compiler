@@ -82,6 +82,10 @@ public interface TypeI {
 
   boolean isVoidable();
 
+  boolean isNullType();
+
+  boolean isVoidType();
+
   boolean isPrototypeObject();
 
   boolean isInstanceofObject();
@@ -113,6 +117,8 @@ public interface TypeI {
    * returns null.
    */
   Iterable<? extends TypeI> getUnionMembers();
+
+  TypeI meetWith(TypeI other);
 
   String getDisplayName();
 }

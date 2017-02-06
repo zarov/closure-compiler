@@ -28,7 +28,6 @@ import com.google.javascript.jscomp.graph.DiGraph.DiGraphEdge;
 import com.google.javascript.rhino.FunctionTypeI;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
-import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.TypeI;
 
 /**
@@ -71,7 +70,9 @@ public final class CheckNullableReturn implements HotSwapCompilerPass, NodeTrave
   }
 
   public static boolean hasReturnDeclaredNullable(Node n) {
-    return n.isBlock() && n.hasChildren() && isReturnTypeNullable(n.getParent())
+    return n.isNormalBlock()
+        && n.hasChildren()
+        && isReturnTypeNullable(n.getParent())
         && !hasSingleThrow(n);
   }
 
@@ -95,7 +96,7 @@ public final class CheckNullableReturn implements HotSwapCompilerPass, NodeTrave
    * @return whether the blockNode contains only a single "throw" child node.
    */
   private static boolean hasSingleThrow(Node blockNode) {
-    if (blockNode.getChildCount() == 1 && blockNode.getFirstChild().getToken() == Token.THROW) {
+    if (blockNode.hasOneChild() && blockNode.getFirstChild().isThrow()) {
       // Functions consisting of a single "throw FOO" can be actually abstract,
       // so do not check their return type nullability.
       return true;

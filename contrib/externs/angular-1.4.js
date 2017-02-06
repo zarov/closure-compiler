@@ -20,7 +20,6 @@
  * TODO: Remaining Services:
  *     $cookieStore
  *     $httpBackend
- *     $locale
  *     $rootElement
  *     $rootScope
  *     $rootScopeProvider
@@ -414,7 +413,7 @@ angular.LinkingFunctions.post = function(scope, iElement, iAttrs, controller) {
  *       function(!angular.JQLite=,!angular.Attributes=): string|
  *       undefined),
  *   templateNamespace: (string|undefined),
- *   templateUrl: (string|
+ *   templateUrl: (string|!Object|
  *       function(!angular.JQLite=,!angular.Attributes=)|
  *       undefined),
  *   terminal: (boolean|undefined),
@@ -453,7 +452,7 @@ angular.JQLite.prototype.append = function(element) {};
 
 /**
  * @param {string} name
- * @param {(string|boolean)=} opt_value
+ * @param {(string|boolean|null)=} opt_value
  * @return {!angular.JQLite|string|boolean}
  */
 angular.JQLite.prototype.attr = function(name, opt_value) {};
@@ -1577,6 +1576,20 @@ angular.$interval_;
 angular.$interval_.cancel = function(promise) {};
 
 /******************************************************************************
+ * $locale Service
+ *****************************************************************************/
+
+/**
+ * @interface
+ */
+angular.$locale = function() {};
+
+/**
+ * @type {string}
+ */
+angular.$locale.prototype.id;
+
+/******************************************************************************
  * $location Service
  *****************************************************************************/
 
@@ -2127,7 +2140,7 @@ angular.$routeProvider.Params.controllerAs;
 /** @type {string} */
 angular.$routeProvider.Params.template;
 
-/** @type {string|function(!Object.<string,string>=)} */
+/** @type {string|!Object|function(!Object.<string,string>=)} */
 angular.$routeProvider.Params.templateUrl;
 
 /** @type {Object.<string, (string|angular.Injectable|!angular.$q.Promise)>} */

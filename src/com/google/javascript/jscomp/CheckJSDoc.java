@@ -144,6 +144,16 @@ final class CheckJSDoc extends AbstractPostOrderCallback implements HotSwapCompi
       return n.getLastChild();
     }
 
+    if (n.isStringKey() && n.getGrandparent() != null
+        && ClosureRewriteClass.isGoogDefineClass(n.getGrandparent())
+        && n.getFirstChild().isFunction()) {
+      return n.getFirstChild();
+    }
+
+    if (n.isGetterDef() || n.isSetterDef()) {
+      return n.getFirstChild();
+    }
+
     return null;
   }
 
@@ -177,7 +187,7 @@ final class CheckJSDoc extends AbstractPostOrderCallback implements HotSwapCompi
     if (info == null || !info.isAbstract()) {
       return;
     }
-    if (n.isClass()) {
+    if (isClassDecl(n)) {
       return;
     }
 
@@ -193,21 +203,24 @@ final class CheckJSDoc extends AbstractPostOrderCallback implements HotSwapCompi
       return;
     }
 
-    if (NodeUtil.getFunctionBody(functionNode).hasChildren()) {
+    if (!info.isConstructor() && NodeUtil.getFunctionBody(functionNode).hasChildren()) {
       // @abstract annotation on a function with a non-empty body
       report(n, MISPLACED_ANNOTATION, "@abstract",
           "function with a non-empty body cannot be abstract");
       return;
     }
 
-    if (n.isMemberFunctionDef() && "constructor".equals(n.getString())) {
-      // @abstract annotation on an ES6 constructor
+    if ((n.isMemberFunctionDef() || n.isStringKey()) && "constructor".equals(n.getString())) {
+      // @abstract annotation on an ES6 or goog.defineClass constructor
       report(n, MISPLACED_ANNOTATION, "@abstract", "constructors cannot be abstract");
       return;
     }
 
     if (!info.isConstructor()
         && !n.isMemberFunctionDef()
+        && !n.isStringKey()
+        && !n.isGetterDef()
+        && !n.isSetterDef()
         && !NodeUtil.isPrototypeMethod(functionNode)) {
       // @abstract annotation on a non-method (or static method) in ES5
       report(
@@ -277,9 +290,6 @@ final class CheckJSDoc extends AbstractPostOrderCallback implements HotSwapCompi
       // with a function as the RHS, etc.
       switch (n.getToken()) {
         case FUNCTION:
-        case VAR:
-        case LET:
-        case CONST:
         case GETTER_DEF:
         case SETTER_DEF:
         case MEMBER_FUNCTION_DEF:
@@ -293,7 +303,15 @@ final class CheckJSDoc extends AbstractPostOrderCallback implements HotSwapCompi
             return;
           }
           break;
+        case VAR:
+        case LET:
+        case CONST:
         case ASSIGN: {
+          Node lhs = n.getFirstChild();
+          Node rhs = NodeUtil.getRValueOfLValue(lhs);
+          if (rhs != null && isClass(rhs) && !info.isConstructor()) {
+            break;
+          }
           // TODO(tbreisacher): Check that the RHS of the assignment is a
           // function. Note that it can be a FUNCTION node, but it can also be
           // a call to goog.abstractMethod, goog.functions.constant, etc.

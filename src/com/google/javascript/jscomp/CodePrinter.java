@@ -18,13 +18,15 @@ package com.google.javascript.jscomp;
 
 import com.google.common.base.CharMatcher;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 import com.google.debugging.sourcemap.FilePosition;
 import com.google.javascript.jscomp.CodePrinter.Builder.CodeGeneratorFactory;
 import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
 import com.google.javascript.rhino.Node;
+import com.google.javascript.rhino.StaticSourceFile;
 import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.TypeIRegistry;
-
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -79,6 +81,12 @@ public final class CodePrinter {
       Node node;
       FilePosition start;
       FilePosition end;
+
+      @Override
+      public String toString() {
+        // This toString() representation is used for debugging purposes only.
+        return "Mapping: start " + start + ", end " + end + ", node " + node;
+      }
     }
 
     /**
@@ -124,10 +132,12 @@ public final class CodePrinter {
      * appending the information it saved to the SourceMap
      * object given.
      */
-    void generateSourceMap(SourceMap map){
+    void generateSourceMap(String code, SourceMap map) {
       if (createSrcMap) {
+        List<Integer> lineLengths = computeLineLengths(code);
         for (Mapping mapping : allMappings) {
-          map.addMapping(mapping.node, mapping.start, mapping.end);
+          map.addMapping(
+              mapping.node, mapping.start, adjustEndPosition(lineLengths, mapping.end));
         }
       }
     }
@@ -213,11 +223,59 @@ public final class CodePrinter {
     protected final int getCurrentLineIndex() {
       return lineIndex;
     }
+
+    /** Calculates length of each line in compiled code. */
+    private static List<Integer> computeLineLengths(String code) {
+      ImmutableList.Builder<Integer> builder = ImmutableList.<Integer>builder();
+      int lineStartPos = 0;
+      int lineEndPos = code.indexOf('\n');
+      while (lineEndPos > -1) {
+        builder.add(lineEndPos - lineStartPos);
+        // Next line starts where current line ends + 1 to skip "\n" character.
+        lineStartPos = lineEndPos + 1;
+        lineEndPos = code.indexOf('\n', lineStartPos);
+      }
+      return builder.build();
+    }
+
+    /**
+     * Adjusts end position of a mapping. End position points to a column *after* the last character
+     * that is covered by a mapping. And if it's end of the line there are 2 possibilites: either
+     * point to the non-existent character after the last char on a line or point to the first
+     * character on the next line. In some cases we end up with 2 mappings which should have the
+     * same end position, but they use different styles as described above it leads to invalid
+     * source maps.
+     *
+     * This method adjusts all such end positions, so if it points to the non-existing character
+     * at the end of line - it is changed to point to the first character on the next line.
+     *
+     * @param lineLengths List of all line lengths in compiled code.
+     * @param endPosition End position of a mapping.
+     */
+    private static FilePosition adjustEndPosition(
+        List<Integer> lineLengths, FilePosition endPosition) {
+      int line = endPosition.getLine();
+      // if position points to non-existing line, return it unmodified
+      if (line >= lineLengths.size()) {
+        return endPosition;
+      }
+
+      Preconditions.checkState(
+          endPosition.getColumn() <= lineLengths.get(line),
+          "End position %s points to a column larger than line length %s",
+          endPosition,
+          lineLengths.get(line));
+
+      // if end position points to the column just after the last character on the line -
+      // change it to point the first character on the next line
+      if (endPosition.getColumn() == lineLengths.get(line)) {
+        return new FilePosition(line + 1, 0);
+      }
+      return endPosition;
+    }
   }
 
-  static class PrettyCodePrinter
-      extends MappedCodePrinter {
-    // The number of characters after which we insert a line break in the code
+  static class PrettyCodePrinter extends MappedCodePrinter {
     static final String INDENT = "  ";
 
     private int indent = 0;
@@ -259,8 +317,48 @@ public final class CodePrinter {
     }
 
     /**
-     * Adds a newline to the code, resetting the line length and handling
-     * indenting for pretty printing.
+     * Attempt to read the number format out of the original source location, falling back to the
+     * default behavior if we cannot locate it.
+     */
+    @Override
+    void addNumber(double x, Node n) {
+      if (isNegativeZero(x)) {
+        super.addNumber(x, n);
+        return;
+      }
+      String numberFromSource = getNumberFromSource(n);
+      if (numberFromSource == null) {
+        super.addNumber(x, n);
+        return;
+      }
+
+      if (x < 0) {
+        numberFromSource = "-" + numberFromSource;
+      }
+
+      // The string we extract from the source code is not always a number.
+      // Conservatively, we only use it if we can verify that it is as a number
+      // with the right value. This excludes some valid constants (hex, etc.)
+      // for simplicity.
+      double d;
+      try {
+        d = Double.parseDouble(numberFromSource);
+      } catch (NumberFormatException e) {
+        super.addNumber(x, n);
+        return;
+      }
+
+      if (x != d) {
+        super.addNumber(x, n);
+        return;
+      }
+
+      addConstant(numberFromSource);
+    }
+
+    /**
+     * Adds a newline to the code, resetting the line length and handling indenting for pretty
+     * printing.
      */
     @Override
     void startNewLine() {
@@ -332,7 +430,6 @@ public final class CodePrinter {
     void endCaseBody() {
       super.endCaseBody();
       indent--;
-      endStatement();
     }
 
     @Override
@@ -361,7 +458,7 @@ public final class CodePrinter {
 
     @Override
     void maybeInsertSpace() {
-      if (getLastChar() != ' ') {
+      if (getLastChar() != ' ' && getLastChar() != '\n') {
         add(" ");
       }
     }
@@ -379,7 +476,7 @@ public final class CodePrinter {
      */
     @Override
     boolean breakAfterBlockFor(Node n,  boolean isStatementContext) {
-      Preconditions.checkState(n.isBlock(), n);
+      Preconditions.checkState(n.isNormalBlock(), n);
       Node parent = n.getParent();
       if (parent != null) {
         Token type = parent.getToken();
@@ -407,8 +504,47 @@ public final class CodePrinter {
     }
 
     @Override
+    void endStatement(boolean needsSemicolon) {
+      append(";");
+      endLine();
+      statementNeedsEnded = false;
+    }
+
+    @Override
     void endFile() {
       maybeEndStatement();
+    }
+
+    private static String getNumberFromSource(Node n) {
+      if (!n.isNumber()) {
+        return null;
+      }
+
+      StaticSourceFile staticSrc = NodeUtil.getSourceFile(n);
+      if (!(staticSrc instanceof SourceFile)) {
+        return null;
+      }
+      SourceFile src = (SourceFile) staticSrc;
+
+      String srcCode;
+      try {
+        srcCode = src.getCode();
+      } catch (IOException e) {
+        return null;
+      }
+
+      int offset;
+      try {
+        offset = n.getSourceOffset();
+      } catch (IllegalArgumentException e) {
+        return null;
+      }
+      int endOffset = offset + n.getLength();
+      if (offset < 0 || endOffset > srcCode.length()) {
+        return null;
+      }
+
+      return srcCode.substring(offset, endOffset);
     }
   }
 
@@ -518,6 +654,7 @@ public final class CodePrinter {
           reportLineCut(lineIndex, position - lineStartPosition, true);
           lineIndex++;
           lineLength -= (position - lineStartPosition);
+          prevLineStartPosition = lineStartPosition;
           lineStartPosition = position + 1;
         } else {
           startNewLine();
@@ -547,7 +684,9 @@ public final class CodePrinter {
         code.setCharAt(prevCutPosition, ' ');
         lineStartPosition = prevLineStartPosition;
         lineLength = code.length() - lineStartPosition;
-        reportLineCut(lineIndex, prevCutPosition + 1, false);
+        // We need +1 to account for the space added few lines above.
+        int prevLineEndPosition = prevCutPosition - prevLineStartPosition + 1;
+        reportLineCut(lineIndex, prevLineEndPosition, false);
         lineIndex--;
         prevCutPosition = 0;
         prevLineStartPosition = 0;
@@ -569,6 +708,7 @@ public final class CodePrinter {
     private boolean prettyPrint;
     private boolean outputTypes = false;
     private SourceMap sourceMap = null;
+    private boolean tagAsExterns;
     private boolean tagAsStrict;
     private TypeIRegistry registry;
     private CodeGeneratorFactory codeGeneratorFactory = new CodeGeneratorFactory() {
@@ -642,6 +782,14 @@ public final class CodePrinter {
     }
 
     /**
+     * Set whether the output should be tagged as @externs code.
+     */
+    public Builder setTagAsExterns(boolean tagAsExterns) {
+      this.tagAsExterns = tagAsExterns;
+      return this;
+    }
+
+    /**
      * Set whether the output should be tags as ECMASCRIPT 5 Strict.
      */
     public Builder setTagAsStrict(boolean tagAsStrict) {
@@ -671,7 +819,7 @@ public final class CodePrinter {
       }
 
       return toSource(root, Format.fromOptions(options, outputTypes, prettyPrint), options,
-          sourceMap, tagAsStrict, lineBreak, codeGeneratorFactory);
+          sourceMap, tagAsExterns, tagAsStrict, lineBreak, codeGeneratorFactory);
     }
   }
 
@@ -697,8 +845,8 @@ public final class CodePrinter {
   /**
    * Converts a tree to JS code
    */
-  private static String toSource(Node root, Format outputFormat,
-      CompilerOptions options, SourceMap sourceMap, boolean tagAsStrict, boolean lineBreak,
+  private static String toSource(Node root, Format outputFormat, CompilerOptions options,
+      SourceMap sourceMap, boolean tagAsExterns, boolean tagAsStrict, boolean lineBreak,
       CodeGeneratorFactory codeGeneratorFactory) {
     Preconditions.checkState(options.sourceMapDetailLevel != null);
 
@@ -717,7 +865,9 @@ public final class CodePrinter {
             options.sourceMapDetailLevel);
     CodeGenerator cg = codeGeneratorFactory.getCodeGenerator(outputFormat, mcp);
 
-    cg.maybeTagAsExterns();
+    if (tagAsExterns) {
+      cg.tagAsExterns();
+    }
     if (tagAsStrict) {
       cg.tagAsStrict();
     }
@@ -728,7 +878,7 @@ public final class CodePrinter {
     String code = mcp.getCode();
 
     if (createSourceMap) {
-      mcp.generateSourceMap(sourceMap);
+      mcp.generateSourceMap(code, sourceMap);
     }
 
     return code;

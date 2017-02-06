@@ -894,22 +894,10 @@ BoxObject.prototype.width;
 
 
 /**
- * @type {number}
- * @see http://www.google.com/codesearch/p?hl=en#eksvcKKj5Ng/mozilla/dom/public/idl/html/nsIDOMNSHTMLImageElement.idl&q=naturalWidth
- */
-HTMLImageElement.prototype.naturalWidth;
-
-/**
- * @type {number}
- * @see http://www.google.com/codesearch/p?hl=en#eksvcKKj5Ng/mozilla/dom/public/idl/html/nsIDOMNSHTMLImageElement.idl&q=naturalHeight
- */
-HTMLImageElement.prototype.naturalHeight;
-
-
-/**
  * @param {Element} element
  * @param {?string=} pseudoElt
- * @return {CSSStyleDeclaration}
+ * @return {?CSSStyleDeclaration}
  * @nosideeffects
+ * @see https://bugzilla.mozilla.org/show_bug.cgi?id=548397
  */
 function getComputedStyle(element, pseudoElt) {}

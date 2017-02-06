@@ -16,6 +16,7 @@
 
 package com.google.javascript.refactoring;
 
+import com.google.common.base.Ascii;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSetMultimap;
@@ -29,13 +30,12 @@ import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
+import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.jstype.JSType;
-
 import java.util.Collection;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 import javax.annotation.Nullable;
 
 
@@ -86,12 +86,48 @@ public final class SuggestedFix {
   }
 
   @Override public String toString() {
+    if (replacements.isEmpty()) {
+      return "<no-op SuggestedFix>";
+    }
     StringBuilder sb = new StringBuilder();
     for (Map.Entry<String, Collection<CodeReplacement>> entry : replacements.asMap().entrySet()) {
       sb.append("Replacements for file: ").append(entry.getKey()).append("\n");
       Joiner.on("\n\n").appendTo(sb, entry.getValue());
     }
     return sb.toString();
+  }
+
+  static String getShortNameForRequire(String namespace) {
+    int lastDot = namespace.lastIndexOf('.');
+    if (lastDot == -1) {
+      return namespace;
+    }
+
+    // A few special cases so that we don't end up with code like
+    // "const string = goog.require('goog.string');" which would shadow the built-in string type.
+    String rightmostName = namespace.substring(lastDot + 1);
+    switch (Ascii.toUpperCase(rightmostName)) {
+      case "ARRAY":
+      case "MAP":
+      case "MATH":
+      case "OBJECT":
+      case "PROMISE":
+      case "SET":
+      case "STRING":
+        int secondToLastDot = namespace.lastIndexOf('.', lastDot - 1);
+        String secondToLastName = namespace.substring(secondToLastDot + 1, lastDot);
+        boolean capitalize = Character.isUpperCase(rightmostName.charAt(0));
+        if (capitalize) {
+          secondToLastName = upperCaseFirstLetter(secondToLastName);
+        }
+        return secondToLastName + upperCaseFirstLetter(rightmostName);
+      default:
+        return rightmostName;
+    }
+  }
+
+  static String upperCaseFirstLetter(String w) {
+    return Character.toUpperCase(w.charAt(0)) + w.substring(1);
   }
 
   /**
@@ -122,7 +158,7 @@ public final class SuggestedFix {
      * Inserts a new node as the first child of the provided node.
      */
     public Builder addChildToFront(Node parentNode, String content) {
-      Preconditions.checkState(parentNode.isBlock(),
+      Preconditions.checkState(parentNode.isNormalBlock(),
           "addChildToFront is only supported for BLOCK statements.");
       int startPosition = parentNode.getSourceOffset() + 1;
       replacements.put(
@@ -149,7 +185,7 @@ public final class SuggestedFix {
       return insertBefore(nodeToInsertBefore, n, compiler, "");
     }
 
-    private Builder insertBefore(
+    Builder insertBefore(
         Node nodeToInsertBefore, Node n, AbstractCompiler compiler, String sortKey) {
       return insertBefore(nodeToInsertBefore, generateCode(compiler, n), sortKey);
     }
@@ -190,6 +226,13 @@ public final class SuggestedFix {
      */
     public Builder deleteWithoutRemovingWhitespaceBefore(Node n) {
       return delete(n, false);
+    }
+
+    /** Deletes a node without touching any surrounding whitespace. */
+    public Builder deleteWithoutRemovingWhitespace(Node n) {
+      replacements.put(
+          n.getSourceFileName(), new CodeReplacement(n.getSourceOffset(), n.getLength(), ""));
+      return this;
     }
 
     /**
@@ -241,7 +284,7 @@ public final class SuggestedFix {
       Node parent = n.getParent();
       if (deleteWhitespaceBefore
           && parent != null
-          && (parent.isScript() || parent.isBlock())) {
+          && (parent.isScript() || parent.isNormalBlock())) {
         Node previousSibling = n.getPrevious();
         if (previousSibling != null) {
           int previousSiblingEndPosition =
@@ -333,8 +376,8 @@ public final class SuggestedFix {
       // EXPR_RESULT nodes will contain the trailing semicolons, but the child node
       // will not. Replace the EXPR_RESULT node to ensure that the semicolons are
       // correct in the final output.
-      if (original.getParent().isExprResult()) {
-        original = original.getParent();
+      if (parent != null && parent.isExprResult()) {
+        original = parent;
       }
       // TODO(mknichel): Move this logic to CodePrinter.
       String newCode = generateCode(compiler, newNode);
@@ -344,7 +387,8 @@ public final class SuggestedFix {
       }
       // Most replacements don't need the semicolon in the new generated code - however, some
       // statements that are blocks or expressions will need the semicolon.
-      boolean needsSemicolon = parent.isExprResult() || parent.isBlock() || parent.isScript();
+      boolean needsSemicolon =
+          parent != null && (parent.isExprResult() || parent.isNormalBlock() || parent.isScript());
       if (newCode.endsWith(";") && !needsSemicolon) {
         newCode = newCode.substring(0, newCode.length() - 1);
       }
@@ -542,6 +586,13 @@ public final class SuggestedFix {
       return this;
     }
 
+    public Builder addLhsToGoogRequire(Match m, String namespace) {
+      Node existingNode = findGoogRequireNode(m.getNode(), m.getMetadata(), namespace);
+      String shortName = getShortNameForRequire(namespace);
+      insertBefore(existingNode, "const " + shortName + " = ");
+      return this;
+    }
+
     /**
      * Adds a goog.require for the given namespace to the file if it does not
      * already exist.
@@ -553,27 +604,40 @@ public final class SuggestedFix {
       if (existingNode != null) {
         return this;
       }
-      Node googRequireNode = IR.exprResult(IR.call(
-          IR.getprop(IR.name("goog"), IR.string("require")),
-          IR.string(namespace)));
 
       // Find the right goog.require node to insert this after.
       Node script = NodeUtil.getEnclosingScript(node);
       if (script == null) {
         return this;
       }
-      Node lastGoogProvideNode = null;
+      if (script.getFirstChild().isModuleBody()) {
+        script = script.getFirstChild();
+      }
+
+      Node googRequireNode = IR.call(
+          IR.getprop(IR.name("goog"), IR.string("require")),
+          IR.string(namespace));
+
+      String shortName = getShortNameForRequire(namespace);
+
+      if (script.isModuleBody()) {
+        googRequireNode = IR.constNode(IR.name(shortName), googRequireNode);
+      } else {
+        googRequireNode = IR.exprResult(googRequireNode);
+      }
+
+      Node lastModuleOrProvideNode = null;
       Node lastGoogRequireNode = null;
       Node nodeToInsertBefore = null;
       Node child = script.getFirstChild();
       while (child != null) {
-        if (child.isExprResult() && child.getFirstChild().isCall()) {
+        if (NodeUtil.isExprCall(child)) {
           // TODO(mknichel): Replace this logic with a function argument
           // Matcher when it exists.
           Node grandchild = child.getFirstChild();
-          if (Matchers.functionCall("goog.provide").matches(grandchild, metadata)) {
-            lastGoogProvideNode = grandchild;
-          } else if (Matchers.functionCall("goog.require").matches(grandchild, metadata)) {
+          if (Matchers.googModuleOrProvide().matches(grandchild, metadata)) {
+            lastModuleOrProvideNode = grandchild;
+          } else if (Matchers.googRequire().matches(grandchild, metadata)) {
             lastGoogRequireNode = grandchild;
             if (grandchild.getLastChild().isString()
                 && namespace.compareTo(grandchild.getLastChild().getString()) < 0) {
@@ -581,15 +645,22 @@ public final class SuggestedFix {
               break;
             }
           }
+        } else if (NodeUtil.isNameDeclaration(child)
+            && child.getFirstFirstChild() != null
+            && Matchers.googRequire().matches(child.getFirstFirstChild(), metadata)) {
+          if (shortName.compareTo(child.getFirstChild().getString()) < 0) {
+            nodeToInsertBefore = child;
+            break;
+          }
         }
         child = child.getNext();
       }
       if (nodeToInsertBefore == null) {
         // The file has goog.provide or goog.require nodes but they come before
         // the new goog.require node alphabetically.
-        if (lastGoogProvideNode != null || lastGoogRequireNode != null) {
+        if (lastModuleOrProvideNode != null || lastGoogRequireNode != null) {
           Node nodeToInsertAfter =
-              lastGoogRequireNode != null ? lastGoogRequireNode : lastGoogProvideNode;
+              lastGoogRequireNode != null ? lastGoogRequireNode : lastModuleOrProvideNode;
           int startPosition =
               nodeToInsertAfter.getSourceOffset() + nodeToInsertAfter.getLength() + 2;
           replacements.put(nodeToInsertAfter.getSourceFileName(), new CodeReplacement(
@@ -627,19 +698,19 @@ public final class SuggestedFix {
 
     private Node findGoogRequireNode(Node n, NodeMetadata metadata, String namespace) {
       Node script = NodeUtil.getEnclosingScript(n);
+      if (script.getFirstChild().isModuleBody()) {
+        script = script.getFirstChild();
+      }
 
       if (script != null) {
         Node child = script.getFirstChild();
         while (child != null) {
-          if (child.isExprResult() && child.getFirstChild().isCall()) {
-            // TODO(mknichel): Replace this logic with a function argument
-            // Matcher when it exists.
-            Node grandchild = child.getFirstChild();
-            if (Matchers.functionCall("goog.require").matches(child.getFirstChild(), metadata)
-                && grandchild.getLastChild().isString()
-                && namespace.equals(grandchild.getLastChild().getString())) {
-              return child;
-            }
+          if ((NodeUtil.isExprCall(child)
+                  && Matchers.googRequire(namespace).matches(child.getFirstChild(), metadata))
+              || (NodeUtil.isNameDeclaration(child)
+                  && child.getFirstFirstChild() != null && Matchers.googRequire(namespace)
+                      .matches(child.getFirstFirstChild(), metadata))) {
+            return child;
           }
           child = child.getNext();
         }
@@ -650,6 +721,10 @@ public final class SuggestedFix {
     public String generateCode(AbstractCompiler compiler, Node node) {
       // TODO(mknichel): Fix all the formatting problems with this code.
       // How does this play with goog.scope?
+      if (node.isNormalBlock()) {
+        // Avoid printing the {}'s
+        node.setToken(Token.SCRIPT);
+      }
       CompilerOptions compilerOptions = new CompilerOptions();
       compilerOptions.setPreferSingleQuotes(true);
       compilerOptions.setLineLengthThreshold(80);
@@ -684,8 +759,8 @@ public final class SuggestedFix {
 
       Node child = script.getFirstChild();
       while (child != null) {
-        if (child.isExprResult() && child.getFirstChild().isCall()) {
-          if (Matchers.functionCall("goog.require").matches(child.getFirstChild(), metadata)) {
+        if (NodeUtil.isExprCall(child)) {
+          if (Matchers.googRequire().matches(child.getFirstChild(), metadata)) {
             return true;
           }
           // goog.require or goog.module.

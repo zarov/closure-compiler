@@ -82,6 +82,7 @@ final class CheckSuspiciousCode extends AbstractPostOrderCallback {
 
       case WHILE:
       case FOR:
+      case FOR_IN:
       case FOR_OF:
         reportIfWasEmpty(t, NodeUtil.getLoopCodeBlock(n));
         break;
@@ -91,7 +92,7 @@ final class CheckSuspiciousCode extends AbstractPostOrderCallback {
   }
 
   private static void reportIfWasEmpty(NodeTraversal t, Node block) {
-    Preconditions.checkState(block.isBlock());
+    Preconditions.checkState(block.isNormalBlock());
 
     // A semicolon is distinguished from a block without children by
     // annotating it with EMPTY_BLOCK.  Blocks without children are

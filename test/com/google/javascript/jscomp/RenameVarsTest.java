@@ -102,7 +102,6 @@ public final class RenameVarsTest extends CompilerTestCase {
     shouldShadow = false;
     preferStableNames = false;
     nameGenerator = null;
-    compareJsDoc = false;
 
     // TODO(johnlenz): Enable Normalize during these tests.
   }
@@ -128,18 +127,24 @@ public final class RenameVarsTest extends CompilerTestCase {
     test(
         LINE_JOINER.join(
             "function f1(v1, v2) {f1()};",
-         "/** @suppress {duplicate} */",
-         "function f1(v3, v4) {f1()};"),
-         "function a(b, c) {a()};" +
-         "function a(b, c) {a()};");
+            "/** @suppress {duplicate} */",
+            "function f1(v3, v4) {f1()};"),
+        LINE_JOINER.join(
+            "function a(b, c) {a()};",
+            "/** @suppress {duplicate} */",
+            "function a(b, c) {a()};"));
 
     localRenamingOnly = true;
 
-    test("function f1(v1, v2) {f1()};" +
-        "/** @suppress {duplicate} */" +
-        "function f1(v3, v4) {f1()};",
-        "function f1(a, b) {f1()};" +
-        "function f1(a, b) {f1()};");
+    test(
+        LINE_JOINER.join(
+            "function f1(v1, v2) {f1()};",
+            "/** @suppress {duplicate} */",
+            "function f1(v3, v4) {f1()};"),
+        LINE_JOINER.join(
+            "function f1(a, b) {f1()};",
+            "/** @suppress {duplicate} */",
+            "function f1(a, b) {f1()};"));
   }
 
   public void testRecursiveFunctions1() {
@@ -248,7 +253,7 @@ public final class RenameVarsTest extends CompilerTestCase {
   }
 
   public void testDoNotRenameExportedName() {
-    test("_foo()", "_foo()");
+    testSame("_foo()");
   }
 
   public void testDoNotRenameArguments() {
@@ -256,8 +261,7 @@ public final class RenameVarsTest extends CompilerTestCase {
   }
 
   public void testRenameWithNameOverlap() {
-    test("var a = 1; var b = 2; b + b;",
-         "var a = 1; var b = 2; b + b;");
+    testSame("var a = 1; var b = 2; b + b;");
   }
 
   public void testRenameWithPrefix1() {
@@ -423,11 +427,9 @@ public final class RenameVarsTest extends CompilerTestCase {
   }
 
   public void testStableRenameWithNameOverlap() {
-    test("var a = 1; var b = 2; b + b;",
-         "var a = 1; var b = 2; b + b;");
+    testSame("var a = 1; var b = 2; b + b;");
     previouslyUsedMap = renameVars.getVariableMap();
-    test("var a = 1; var c, b = 2; b + b;",
-         "var a = 1; var c, b = 2; b + b;");
+    testSame("var a = 1; var c, b = 2; b + b;");
   }
 
   public void testStableRenameWithAnonymousFunctions() {
@@ -573,7 +575,7 @@ public final class RenameVarsTest extends CompilerTestCase {
 
   public void testDollarSignSuperExport1() {
     useGoogleCodingConvention = false;
-    // See http://code.google.com/p/closure-compiler/issues/detail?id=32
+    // See http://blickly.github.io/closure-compiler-issues/#32
     test("var x = function($super,duper,$fantastic){}",
          "var c = function($super,    a,        b){}");
 
@@ -589,7 +591,7 @@ public final class RenameVarsTest extends CompilerTestCase {
     withNormalize = true;
 
     useGoogleCodingConvention = false;
-    // See http://code.google.com/p/closure-compiler/issues/detail?id=32
+    // See http://blickly.github.io/closure-compiler-issues/#32
     test("var x = function($super,duper,$fantastic){};" +
             "var y = function($super,duper){};",
          "var c = function($super,    a,         b){};" +
@@ -613,7 +615,7 @@ public final class RenameVarsTest extends CompilerTestCase {
 
   public void testPseudoNames() {
     generatePseudoNames = false;
-    // See http://code.google.com/p/closure-compiler/issues/detail?id=32
+    // See http://blickly.github.io/closure-compiler-issues/#32
     test("var foo = function(a, b, c){}",
          "var d = function(a, b, c){}");
 

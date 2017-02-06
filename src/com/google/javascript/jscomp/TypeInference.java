@@ -53,7 +53,6 @@ import com.google.javascript.rhino.jstype.TemplateType;
 import com.google.javascript.rhino.jstype.TemplateTypeMap;
 import com.google.javascript.rhino.jstype.TemplateTypeMapReplacer;
 import com.google.javascript.rhino.jstype.UnionType;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -211,7 +210,7 @@ class TypeInference
 
       switch (branch) {
         case ON_TRUE:
-          if (NodeUtil.isForIn(source)) {
+          if (source.isForIn()) {
             // item is assigned a property name, so its type should be string.
             Node item = source.getFirstChild();
             Node obj = item.getNext();
@@ -224,12 +223,14 @@ class TypeInference
             if (item.isName()) {
               JSType iterKeyType = getNativeType(STRING_TYPE);
               ObjectType objType = getJSType(obj).dereference();
-              JSType objIndexType = objType == null ?
-                  null : objType.getTemplateTypeMap().getResolvedTemplateType(
-                      registry.getObjectIndexKey());
+              JSType objIndexType =
+                  objType == null
+                      ? null
+                      : objType
+                          .getTemplateTypeMap()
+                          .getResolvedTemplateType(registry.getObjectIndexKey());
               if (objIndexType != null && !objIndexType.isUnknownType()) {
-                JSType narrowedKeyType =
-                    iterKeyType.getGreatestSubtype(objIndexType);
+                JSType narrowedKeyType = iterKeyType.getGreatestSubtype(objIndexType);
                 if (!narrowedKeyType.isEmptyType()) {
                   iterKeyType = narrowedKeyType;
                 }
@@ -459,11 +460,40 @@ class TypeInference
           n.setJSType(info.getType().evaluate(syntacticScope, registry));
         }
         break;
+
+      case SUPER:
+        traverseSuper(n);
+        break;
+
       default:
         break;
     }
 
     return scope;
+  }
+
+  private void traverseSuper(Node superNode) {
+    // We only need to handle cases of super() constructor calls for now.
+    // All super.method() uses are transpiled away before this pass.
+    JSType jsType = functionScope.getRootNode().getJSType();
+    FunctionType constructorType = (jsType == null) ? null : jsType.toMaybeFunctionType();
+    FunctionType superConstructorType =
+        (constructorType == null) ? null : constructorType.getSuperClassConstructor();
+    if (superConstructorType != null) {
+      // Treat super() like a function with the same signature as the
+      // superclass constructor, but don't require 'new' or 'this'.
+      superNode.setJSType(
+          new FunctionBuilder(registry)
+              .copyFromOtherFunction(superConstructorType)
+              // Invocations of super() don't use new
+              .setIsConstructor(false)
+              // Even if the super class is abstract, we still need to call its constructor.
+              .withIsAbstract(false) //
+              .withTypeOfThis(null)
+              .build());
+    } else {
+      superNode.setJSType(unknownType);
+    }
   }
 
   /**
@@ -1073,15 +1103,19 @@ class TypeInference
   private void updateTypeOfParameters(Node n, FunctionType fnType) {
     int i = 0;
     int childCount = n.getChildCount();
+    Node iArgument = n.getFirstChild();
     for (Node iParameter : fnType.getParameters()) {
       if (i + 1 >= childCount) {
         // TypeCheck#visitParametersList will warn so we bail.
         return;
       }
 
-      JSType iParameterType = getJSType(iParameter);
-      Node iArgument = n.getChildAtIndex(i + 1);
+      // NOTE: the first child of the call node is the call target, which we want to skip, so
+      // it is correct to call getNext on the first iteration.
+      iArgument = iArgument.getNext();
       JSType iArgumentType = getJSType(iArgument);
+
+      JSType iParameterType = getJSType(iParameter);
       inferPropertyTypesToMatchConstraint(iArgumentType, iParameterType);
 
       // If the parameter to the call is a function expression, propagate the

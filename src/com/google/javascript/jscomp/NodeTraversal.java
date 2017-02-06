@@ -22,11 +22,8 @@ import com.google.common.base.Preconditions;
 import com.google.javascript.rhino.InputId;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.Set;
 
 /**
@@ -55,28 +52,22 @@ public class NodeTraversal {
    * A stack of scope roots. All scopes that have not been created
    * are represented in this Deque.
    */
-  private final Deque<Node> scopeRoots = new ArrayDeque<>();
+  private final ArrayDeque<Node> scopeRoots = new ArrayDeque<>();
 
   /**
-   * Stack containing the control flow graphs (CFG) that have been created.
-   * There are fewer CFGs than scopes, since block-level scopes are not valid CFG roots.
-   * The CFG objects are lazily populated: elements are {@code null} until requested by
-   * {@link #getControlFlowGraph()}. Note that {@link ArrayDeque} does not allow
-   * {@code null} elements, so {@link LinkedList} is used instead.
+   * Stack containing the control flow graphs (CFG) that have been created. There are fewer CFGs
+   * than scopes, since block-level scopes are not valid CFG roots. The CFG objects are lazily
+   * populated: elements are simply the CFG root node until requested by {@link
+   * #getControlFlowGraph()}.
    */
-  private Deque<ControlFlowGraph<Node>> cfgs = new LinkedList<>();
-
-  /**
-   * A stack of scope roots that are valid cfg roots. All cfg roots that have not been created
-   * are represented in this Deque.
-   */
-  private final Deque<Node> cfgRoots = new ArrayDeque<>();
+  private final ArrayDeque<Object> cfgs = new ArrayDeque<>();
 
   /** The current source file name */
   private String sourceName;
 
   /** The current input */
   private InputId inputId;
+  private CompilerInput compilerInput;
 
   /** The scope creator */
   private final ScopeCreator scopeCreator;
@@ -147,7 +138,7 @@ public class NodeTraversal {
   /** Abstract callback to visit all nodes in preorder. */
   public abstract static class AbstractPreOrderCallback implements Callback {
     @Override
-    public void visit(NodeTraversal t, Node n, Node parent) {}
+    public final void visit(NodeTraversal t, Node n, Node parent) {}
   }
 
   /** Abstract scoped callback to visit all nodes in postorder. */
@@ -258,13 +249,12 @@ public class NodeTraversal {
     @Override
     public boolean shouldTraverse(NodeTraversal nodeTraversal, Node n,
         Node parent) {
-      return include == nodeTypes.contains(n.getType());
+      return include == nodeTypes.contains(n.getToken());
     }
   }
 
-  /**
-   * Creates a node traversal using the specified callback interface.
-   */
+  /** Use the 3-argument constructor instead. */
+  @Deprecated
   public NodeTraversal(AbstractCompiler compiler, Callback cb) {
     this(compiler, cb, compiler.getLanguageMode().isEs6OrHigher()
         ? new Es6SyntacticScopeCreator(compiler)
@@ -282,8 +272,7 @@ public class NodeTraversal {
       this.scopeCallback = (ScopedCallback) cb;
     }
     this.compiler = compiler;
-    this.inputId = null;
-    this.sourceName = "";
+    setInputId(null, "");
     this.scopeCreator = scopeCreator;
     this.useBlockScope = scopeCreator.hasBlockScope();
   }
@@ -320,8 +309,7 @@ public class NodeTraversal {
    */
   public void traverse(Node root) {
     try {
-      inputId = NodeUtil.getInputId(root);
-      sourceName = "";
+      setInputId(NodeUtil.getInputId(root), "");
       curNode = root;
       pushScope(root);
       // null parent ensures that the shallow callbacks will traverse root
@@ -337,8 +325,7 @@ public class NodeTraversal {
       Node scopeRoot = externs.getParent();
       Preconditions.checkNotNull(scopeRoot);
 
-      inputId = NodeUtil.getInputId(scopeRoot);
-      sourceName = "";
+      setInputId(NodeUtil.getInputId(scopeRoot), "");
       curNode = scopeRoot;
       pushScope(scopeRoot);
 
@@ -378,8 +365,7 @@ public class NodeTraversal {
   void traverseWithScope(Node root, Scope s) {
     Preconditions.checkState(s.isGlobal());
     try {
-      inputId = null;
-      sourceName = "";
+      setInputId(null, "");
       curNode = root;
       pushScope(s);
       traverseBranch(root, null);
@@ -395,14 +381,22 @@ public class NodeTraversal {
    */
   void traverseAtScope(Scope s) {
     Node n = s.getRootNode();
+    curNode = n;
+    Deque<Scope> parentScopes = new ArrayDeque<>();
+    Scope temp = s.getParent();
+    while (temp != null) {
+      parentScopes.push(temp);
+      temp = temp.getParent();
+    }
+    while (!parentScopes.isEmpty()) {
+      pushScope(parentScopes.pop(), true);
+    }
     if (n.isFunction()) {
       // We need to do some extra magic to make sure that the scope doesn't
       // get re-created when we dive into the function.
       if (inputId == null) {
-        inputId = NodeUtil.getInputId(n);
+        setInputId(NodeUtil.getInputId(n), getSourceName(n));
       }
-      sourceName = getSourceName(n);
-      curNode = n;
       pushScope(s);
 
       Node args = n.getSecondChild();
@@ -411,12 +405,10 @@ public class NodeTraversal {
       traverseBranch(body, n);
 
       popScope();
-    } else if (n.isBlock()) {
+    } else if (n.isNormalBlock()) {
       if (inputId == null) {
-        inputId = NodeUtil.getInputId(n);
+        setInputId(NodeUtil.getInputId(n), getSourceName(n));
       }
-      sourceName = getSourceName(n);
-      curNode = n;
       pushScope(s);
 
       // traverseBranch is not called here to avoid re-creating the block scope.
@@ -441,7 +433,7 @@ public class NodeTraversal {
     Preconditions.checkState(node.isFunction());
     Preconditions.checkState(scope.getRootNode() != null);
     if (inputId == null) {
-      inputId = NodeUtil.getInputId(node);
+      setInputId(NodeUtil.getInputId(node), getSourceName(node));
     }
     curNode = node.getParent();
     pushScope(scope, true /* quietly */);
@@ -462,7 +454,7 @@ public class NodeTraversal {
   void traverseInnerNode(Node node, Node parent, Scope refinedScope) {
     Preconditions.checkNotNull(parent);
     if (inputId == null) {
-      inputId = NodeUtil.getInputId(node);
+      setInputId(NodeUtil.getInputId(node), getSourceName(node));
     }
     if (refinedScope != null && getScope() != refinedScope) {
       curNode = node;
@@ -523,7 +515,10 @@ public class NodeTraversal {
    * Gets the current input source.
    */
   public CompilerInput getInput() {
-    return compiler.getInput(inputId);
+    if (compilerInput == null) {
+      compilerInput = compiler.getInput(inputId);
+    }
+    return compilerInput;
   }
 
   /**
@@ -564,7 +559,7 @@ public class NodeTraversal {
         new AbstractPreOrderCallback() {
           @Override
           public final boolean shouldTraverse(NodeTraversal t, Node n, Node p) {
-            if ((n == jsRoot || n.isFunction()) && comp.hasScopeChanged(n)) {
+            if ((n.isScript() || n.isFunction()) && comp.hasScopeChanged(n)) {
               cb.enterFunction(comp, n);
             }
             return true;
@@ -596,6 +591,9 @@ public class NodeTraversal {
     t.traverse(root);
   }
 
+  /**
+   * @deprecated Use traverseRootsEs6.
+   */
   @Deprecated
   public static void traverseRoots(
       AbstractCompiler compiler, Callback cb, Node externs, Node root) {
@@ -619,10 +617,9 @@ public class NodeTraversal {
    * Traverses a branch.
    */
   private void traverseBranch(Node n, Node parent) {
-    Token type = n.getType();
+    Token type = n.getToken();
     if (type == Token.SCRIPT) {
-      inputId = n.getInputId();
-      sourceName = getSourceName(n);
+      setInputId(n.getInputId(), getSourceName(n));
     }
 
     curNode = n;
@@ -698,7 +695,7 @@ public class NodeTraversal {
       traverseBranch(className, n);
     }
 
-    final Node extendsClause = className.getNext();
+    final Node extendsClause = n.getSecondChild();
     final Node body = extendsClause.getNext();
 
     // Extends
@@ -746,8 +743,7 @@ public class NodeTraversal {
   private void recordScopeRoot(Node node) {
     compiler.setScope(node);
     if (NodeUtil.isValidCfgRoot(node)) {
-      cfgRoots.push(node);
-      cfgs.push(null);
+      cfgs.push(node);
     }
   }
 
@@ -792,35 +788,29 @@ public class NodeTraversal {
     if (!quietly && scopeCallback != null) {
       scopeCallback.exitScope(this);
     }
-    Node scopeRoot;
-    if (scopeRoots.isEmpty()) {
+    Node scopeRoot = scopeRoots.pollFirst();
+    if (scopeRoot == null) {
       scopeRoot = scopes.pop().getRootNode();
-    } else {
-      scopeRoot = scopeRoots.pop();
     }
     if (NodeUtil.isValidCfgRoot(scopeRoot)) {
-      Preconditions.checkState(!cfgRoots.isEmpty());
-      Preconditions.checkState(cfgRoots.pop() == scopeRoot);
       cfgs.pop();
     }
-    if (hasScope()) {
-      compiler.setScope(getScopeRoot());
+    Node newScopeRoot = getScopeRoot();
+    if (newScopeRoot != null) {
+      compiler.setScope(newScopeRoot);
     }
   }
 
   /** Gets the current scope. */
   public Scope getScope() {
-    Scope scope = scopes.isEmpty() ? null : scopes.peek();
-    if (scopeRoots.isEmpty()) {
-      return scope;
-    }
+    Scope scope = scopes.peek();
 
-    Iterator<Node> it = scopeRoots.descendingIterator();
-    while (it.hasNext()) {
-      scope = scopeCreator.createScope(it.next(), scope);
+    Node root = null;
+    while ((root = scopeRoots.pollLast()) != null) {
+      scope = scopeCreator.createScope(root, scope);
       scopes.push(scope);
     }
-    scopeRoots.clear();
+
     // No need to call compiler.setScope; the top scopeRoot is now the top scope
     return scope;
   }
@@ -841,26 +831,41 @@ public class NodeTraversal {
 
   /** Gets the control flow graph for the current JS scope. */
   public ControlFlowGraph<Node> getControlFlowGraph() {
-    if (cfgs.peek() == null) {
+    ControlFlowGraph<Node> result;
+    Object o = cfgs.peek();
+    if (o instanceof Node) {
+      Node cfgRoot = (Node) o;
       ControlFlowAnalysis cfa = new ControlFlowAnalysis(compiler, false, true);
-      cfa.process(null, getCfgRoot());
+      cfa.process(null, cfgRoot);
+      result = cfa.getCfg();
       cfgs.pop();
-      cfgs.push(cfa.getCfg());
+      cfgs.push(result);
+    } else {
+      result = (ControlFlowGraph<Node>) o;
     }
-    return cfgs.peek();
+    return result;
   }
 
   /** Returns the current scope's root. */
   public Node getScopeRoot() {
-    if (scopeRoots.isEmpty()) {
-      return scopes.peek().getRootNode();
+    Node root = scopeRoots.peek();
+    if (root == null) {
+      Scope s = scopes.peek();
+      return s != null ? s.getRootNode() : null;
     } else {
-      return scopeRoots.peek();
+      return root;
     }
   }
 
   private Node getCfgRoot() {
-    return cfgRoots.peek();
+    Node result;
+    Object o = cfgs.peek();
+    if (o instanceof Node) {
+      result = (Node) o;
+    } else {
+      result = ((ControlFlowGraph<Node>) o).getEntry().getValue();
+    }
+    return result;
   }
 
   /**
@@ -871,6 +876,14 @@ public class NodeTraversal {
     return getScopeDepth() == 0;
   }
 
+  /** Determines whether the traversal is currently in the scope of the block of a function. */
+  public boolean inFunctionBlockScope() {
+    Node scopeRoot = getScopeRoot();
+    return scopeRoot.isNormalBlock()
+        && scopeRoot.getParent() != null
+        && scopeRoot.getParent().isFunction();
+  }
+
   /**
    * Determines whether the hoist scope of the current traversal is global.
    */
@@ -878,11 +891,12 @@ public class NodeTraversal {
     Node cfgRoot = getCfgRoot();
     Preconditions.checkState(
         cfgRoot.isScript()
-            || cfgRoot.isBlock()
+            || cfgRoot.isRoot()
+            || cfgRoot.isNormalBlock()
             || cfgRoot.isFunction()
             || cfgRoot.isModuleBody(),
         cfgRoot);
-    return cfgRoot.isScript() || cfgRoot.isBlock();
+    return cfgRoot.isScript() || cfgRoot.isRoot() || cfgRoot.isNormalBlock();
   }
 
   /**
@@ -911,10 +925,6 @@ public class NodeTraversal {
     return sum - 1; // Use 0-based scope depth to be consistent within the compiler
   }
 
-  public boolean hasScope() {
-    return !(scopes.isEmpty() && scopeRoots.isEmpty());
-  }
-
   /** Reports a diagnostic (error or warning) */
   public void report(Node n, DiagnosticType diagnosticType,
       String... arguments) {
@@ -925,6 +935,12 @@ public class NodeTraversal {
   private static String getSourceName(Node n) {
     String name = n.getSourceFileName();
     return nullToEmpty(name);
+  }
+
+  private void setInputId(InputId id, String sourceName) {
+    inputId = id;
+    this.sourceName = sourceName;
+    compilerInput = null;
   }
 
   InputId getInputId() {

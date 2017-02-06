@@ -19,6 +19,7 @@ package com.google.javascript.jscomp.gwt.client;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.base.Strings.nullToEmpty;
 
+import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.gwt.core.client.EntryPoint;
@@ -29,14 +30,27 @@ import com.google.javascript.jscomp.CompilationLevel;
 import com.google.javascript.jscomp.Compiler;
 import com.google.javascript.jscomp.CompilerOptions;
 import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
+import com.google.javascript.jscomp.CompilerOptions.TracerMode;
+import com.google.javascript.jscomp.DefaultExterns;
+import com.google.javascript.jscomp.DependencyOptions;
 import com.google.javascript.jscomp.DiagnosticType;
 import com.google.javascript.jscomp.JSError;
+import com.google.javascript.jscomp.ModuleIdentifier;
+import com.google.javascript.jscomp.ResourceLoader;
 import com.google.javascript.jscomp.SourceFile;
+import com.google.javascript.jscomp.SourceMap;
 import com.google.javascript.jscomp.SourceMapInput;
 import com.google.javascript.jscomp.WarningLevel;
+import com.google.javascript.jscomp.deps.SourceCodeEscapers;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import jsinterop.annotations.JsMethod;
 import jsinterop.annotations.JsPackage;
 import jsinterop.annotations.JsProperty;
 import jsinterop.annotations.JsType;
@@ -48,20 +62,32 @@ public final class GwtRunner implements EntryPoint {
   private static final CompilationLevel DEFAULT_COMPILATION_LEVEL =
       CompilationLevel.SIMPLE_OPTIMIZATIONS;
 
+  private static final String OUTPUT_MARKER = "%output%";
+  private static final String OUTPUT_MARKER_JS_STRING = "%output|jsstring%";
+
+  private static final String EXTERNS_PREFIX = "externs/";
+
   private GwtRunner() {}
 
   @JsType(namespace = JsPackage.GLOBAL, name = "Object", isNative = true)
   private static class Flags {
     boolean angularPass;
+    boolean applyInputSourceMaps;
     boolean assumeFunctionWrapper;
     String compilationLevel;
     boolean dartPass;
+    JsMap defines;
+    String dependencyMode;
+    String[] entryPoint;
+    String env;
     boolean exportLocalPropertyDefinitions;
+    String[] extraAnnotationNames;
     boolean generateExports;
     String languageIn;
     String languageOut;
     boolean checksOnly;
     boolean newTypeInf;
+    String outputWrapper;
     boolean polymerPass;
     boolean preserveTypeAnnotations;
     boolean processCommonJsModules;
@@ -69,6 +95,7 @@ public final class GwtRunner implements EntryPoint {
     boolean rewritePolyfills;
     String warningLevel;
     boolean useTypesForOptimization;
+    String tracerMode;
 
     // These flags do not match the Java compiler JAR.
     File[] jsCode;
@@ -84,15 +111,22 @@ public final class GwtRunner implements EntryPoint {
   private static final Flags defaultFlags = new Flags();
   static {
     defaultFlags.angularPass = false;
+    defaultFlags.applyInputSourceMaps = true;
     defaultFlags.assumeFunctionWrapper = false;
+    defaultFlags.checksOnly = false;
     defaultFlags.compilationLevel = "SIMPLE";
     defaultFlags.dartPass = false;
+    defaultFlags.defines = null;
+    defaultFlags.dependencyMode = null;
+    defaultFlags.entryPoint = null;
+    defaultFlags.env = "BROWSER";
     defaultFlags.exportLocalPropertyDefinitions = false;
+    defaultFlags.extraAnnotationNames = null;
     defaultFlags.generateExports = false;
     defaultFlags.languageIn = "ECMASCRIPT6";
     defaultFlags.languageOut = "ECMASCRIPT5";
-    defaultFlags.checksOnly = false;
     defaultFlags.newTypeInf = false;
+    defaultFlags.outputWrapper = null;
     defaultFlags.polymerPass = false;
     defaultFlags.preserveTypeAnnotations = false;
     defaultFlags.processCommonJsModules = false;
@@ -103,6 +137,7 @@ public final class GwtRunner implements EntryPoint {
     defaultFlags.jsCode = null;
     defaultFlags.externs = null;
     defaultFlags.createSourceMap = false;
+    defaultFlags.tracerMode = "OFF";
   }
 
   @JsType(namespace = JsPackage.GLOBAL, name = "Object", isNative = true)
@@ -120,6 +155,58 @@ public final class GwtRunner implements EntryPoint {
     @JsProperty JavaScriptObject[] warnings;
   }
 
+  /**
+   * Reliably returns a string array from the flags/key combo.
+   */
+  private static native String[] getStringArray(Flags flags, String key) /*-{
+    var value = flags[key];
+    if (value == null) {
+      return [];
+    } else if (Array.isArray(value)) {
+      return value;
+    }
+    return [value];
+  }-*/;
+
+  /**
+   * Wraps a generic JS object used as a map.
+   */
+  private static final class JsMap extends JavaScriptObject {
+    protected JsMap() {}
+
+    /**
+     * @return This {@code JsMap} as a {@link Map}.
+     */
+    Map<String, Object> asMap() {
+      ImmutableMap.Builder<String, Object> builder = new ImmutableMap.Builder<>();
+      for (String key : keys(this)) {
+        builder.put(key, get(key));
+      }
+      return builder.build();
+    }
+
+    /**
+     * Validates that the values of this {@code JsMap} are primitives: either number, string or
+     * boolean. Note that {@code typeof null} is object.
+     */
+    private native void validatePrimitiveTypes() /*-{
+      var valid = {'number': '', 'string': '', 'boolean': ''};
+      Object.keys(this).forEach(function(key) {
+        var type = typeof this[key];
+        if (!(type in valid)) {
+          throw new TypeError('Type of define `' + key + '` unsupported: ' + type);
+        }
+      }, this);
+    }-*/;
+
+    private native Object get(String key) /*-{
+      return this[key];
+    }-*/;
+  }
+
+  @JsMethod(name = "keys", namespace = "Object")
+  private static native String[] keys(Object o);
+
   private static native JavaScriptObject createError(String file, String description, String type,
         int lineNo, int charNo) /*-{
     return {file: file, description: description, type: type, lineNo: lineNo, charNo: charNo};
@@ -129,7 +216,7 @@ public final class GwtRunner implements EntryPoint {
    * Convert a list of {@link JSError} instances to a JS array containing plain objects.
    */
   private static JavaScriptObject[] toNativeErrorArray(List<JSError> errors) {
-    JavaScriptObject out[] = new JavaScriptObject[errors.size()];
+    JavaScriptObject[] out = new JavaScriptObject[errors.size()];
     for (int i = 0; i < errors.size(); ++i) {
       JSError error = errors.get(i);
       DiagnosticType type = error.getType();
@@ -137,6 +224,86 @@ public final class GwtRunner implements EntryPoint {
           error.lineNumber, error.getCharno());
     }
     return out;
+  }
+
+  /**
+   * Generates the output code, taking into account the passed {@code outputWrapper}.
+   */
+  private static String writeOutput(Compiler compiler, String outputWrapper) {
+    String code = compiler.toSource();
+    if (outputWrapper == null) {
+      return code;
+    }
+
+    String marker;
+    int pos = outputWrapper.indexOf(OUTPUT_MARKER_JS_STRING);
+    if (pos != -1) {
+      // With jsstring, run SourceCodeEscapers (as per AbstractCommandLineRunner).
+      code = SourceCodeEscapers.javascriptEscaper().escape(code);
+      marker = OUTPUT_MARKER_JS_STRING;
+    } else {
+      pos = outputWrapper.indexOf(OUTPUT_MARKER);
+      if (pos == -1) {
+        return code;  // neither marker could be found, just return code
+      }
+      marker = OUTPUT_MARKER;
+    }
+
+    String prefix = outputWrapper.substring(0, pos);
+    SourceMap sourceMap = compiler.getSourceMap();
+    if (sourceMap != null) {
+      sourceMap.setWrapperPrefix(prefix);
+    }
+    return prefix + code + outputWrapper.substring(pos + marker.length());
+  }
+
+  private static List<SourceFile> createExterns(CompilerOptions.Environment environment) {
+    String[] resources = ResourceLoader.resourceList(GwtRunner.class);
+    Map<String, SourceFile> all = new HashMap<>();
+    for (String res : resources) {
+      if (res.startsWith(EXTERNS_PREFIX)) {
+        String filename = res.substring(EXTERNS_PREFIX.length());
+        all.put(filename, SourceFile.fromCode("externs.zip//" + res,
+              ResourceLoader.loadTextResource(GwtRunner.class, res)));
+      }
+    }
+    return DefaultExterns.prepareExterns(environment, all);
+  }
+
+  private static List<ModuleIdentifier> createEntryPoints(String[] entryPoints) {
+    ImmutableList.Builder<ModuleIdentifier> builder = new ImmutableList.Builder<>();
+    for (String entryPoint : entryPoints) {
+      if (entryPoint.startsWith("goog:")) {
+        builder.add(ModuleIdentifier.forClosure(entryPoint));
+      } else {
+        builder.add(ModuleIdentifier.forFile(entryPoint));
+      }
+    }
+    return builder.build();
+  }
+
+  private static DependencyOptions createDependencyOptions(
+      CompilerOptions.DependencyMode dependencyMode,
+      List<ModuleIdentifier> entryPoints) {
+    // Copied from from AbstractCommandLineRunner.java.
+    if (dependencyMode == CompilerOptions.DependencyMode.STRICT) {
+      if (entryPoints.isEmpty()) {
+        throw new RuntimeException(
+            "When dependencyMode=STRICT, you must specify at least one entry point");
+      }
+      return new DependencyOptions()
+          .setDependencyPruning(true)
+          .setDependencySorting(true)
+          .setMoocherDropping(true)
+          .setEntryPoints(entryPoints);
+    } else if (dependencyMode == CompilerOptions.DependencyMode.LOOSE || !entryPoints.isEmpty()) {
+      return new DependencyOptions()
+          .setDependencyPruning(true)
+          .setDependencySorting(true)
+          .setMoocherDropping(false)
+          .setEntryPoints(entryPoints);
+    }
+    return null;
   }
 
   private static void applyDefaultOptions(CompilerOptions options) {
@@ -149,7 +316,7 @@ public final class GwtRunner implements EntryPoint {
   private static void applyOptionsFromFlags(CompilerOptions options, Flags flags) {
     CompilationLevel level = DEFAULT_COMPILATION_LEVEL;
     if (flags.compilationLevel != null) {
-      level = CompilationLevel.fromString(flags.compilationLevel.toUpperCase());
+      level = CompilationLevel.fromString(Ascii.toUpperCase(flags.compilationLevel));
       if (level == null) {
         throw new RuntimeException(
             "Bad value for compilationLevel: " + flags.compilationLevel);
@@ -169,6 +336,23 @@ public final class GwtRunner implements EntryPoint {
     }
     warningLevel.setOptionsForWarningLevel(options);
 
+    CompilerOptions.Environment environment = CompilerOptions.Environment.BROWSER;
+    if (flags.env != null) {
+      environment = CompilerOptions.Environment.valueOf(Ascii.toUpperCase(flags.env));
+    }
+    options.setEnvironment(environment);
+
+    CompilerOptions.DependencyMode dependencyMode = CompilerOptions.DependencyMode.NONE;
+    if (flags.dependencyMode != null) {
+      dependencyMode =
+          CompilerOptions.DependencyMode.valueOf(Ascii.toUpperCase(flags.dependencyMode));
+    }
+    List<ModuleIdentifier> entryPoints = createEntryPoints(getStringArray(flags, "entryPoint"));
+    DependencyOptions dependencyOptions = createDependencyOptions(dependencyMode, entryPoints);
+    if (dependencyOptions != null) {
+      options.setDependencyOptions(dependencyOptions);
+    }
+
     LanguageMode languageIn = LanguageMode.fromString(flags.languageIn);
     if (languageIn != null) {
       options.setLanguageIn(languageIn);
@@ -182,7 +366,23 @@ public final class GwtRunner implements EntryPoint {
       options.setSourceMapOutputPath("%output%");
     }
 
+    if (flags.defines != null) {
+      // CompilerOptions also validates types, but uses Preconditions and therefore won't generate
+      // a useful exception.
+      flags.defines.validatePrimitiveTypes();
+      options.setDefineReplacements(flags.defines.asMap());
+    }
+
+    if (flags.extraAnnotationNames != null) {
+      options.setExtraAnnotationNames(Arrays.asList(flags.extraAnnotationNames));
+    }
+
+    if (flags.tracerMode != null) {
+      options.setTracerMode(TracerMode.valueOf(flags.tracerMode));
+    }
+
     options.setAngularPass(flags.angularPass);
+    options.setApplyInputSourceMaps(flags.applyInputSourceMaps);
     options.setChecksOnly(flags.checksOnly);
     options.setDartPass(flags.dartPass);
     options.setExportLocalPropertyDefinitions(flags.exportLocalPropertyDefinitions);
@@ -211,7 +411,7 @@ public final class GwtRunner implements EntryPoint {
         out.add(SourceFile.fromCode(path, nullToEmpty(file.src)));
       }
     }
-    return ImmutableList.copyOf(out);
+    return out;
   }
 
   private static ImmutableMap<String, SourceMapInput> buildSourceMaps(
@@ -263,7 +463,6 @@ public final class GwtRunner implements EntryPoint {
       throw new RuntimeException("Unhandled flag: " + unhandled[0]);
     }
 
-    List<SourceFile> externs = fromFileArray(flags.externs, "Extern_");
     List<SourceFile> jsCode = fromFileArray(flags.jsCode, "Input_");
     ImmutableMap<String, SourceMapInput> sourceMaps = buildSourceMaps(flags.jsCode, "Input_");
 
@@ -273,20 +472,23 @@ public final class GwtRunner implements EntryPoint {
     options.setInputSourceMaps(sourceMaps);
     disableUnsupportedOptions(options);
 
+    List<SourceFile> externs = fromFileArray(flags.externs, "Extern_");
+    externs.addAll(createExterns(options.getEnvironment()));
+
     NodeErrorManager errorManager = new NodeErrorManager();
-    Compiler compiler = new Compiler();
+    Compiler compiler = new Compiler(new NodePrintStream());
     compiler.setErrorManager(errorManager);
     compiler.compile(externs, jsCode, options);
 
     ModuleOutput output = new ModuleOutput();
-    output.compiledCode = compiler.toSource();
+    output.compiledCode = writeOutput(compiler, flags.outputWrapper);
     output.errors = toNativeErrorArray(errorManager.errors);
     output.warnings = toNativeErrorArray(errorManager.warnings);
 
     if (flags.createSourceMap) {
       StringBuilder b = new StringBuilder();
       try {
-        compiler.getSourceMap().appendTo(b, "IGNORED");
+        compiler.getSourceMap().appendTo(b, "");
       } catch (IOException e) {
         // ignore
       }
@@ -299,14 +501,16 @@ public final class GwtRunner implements EntryPoint {
   /**
    * Exports the {@link #compile} method via JSNI.
    *
-   * This will be placed on {@code module.exports} or {@code this}.
+   * This will be placed on {@code module.exports}, {@code self.compile} or {@code window.compile}.
    */
   public native void exportCompile() /*-{
     var fn = $entry(@com.google.javascript.jscomp.gwt.client.GwtRunner::compile(*));
     if (typeof module !== 'undefined' && module.exports) {
       module.exports = fn;
+    } else if (typeof self === 'object') {
+      self.compile = fn;
     } else {
-      this.compile = fn;
+      window.compile = fn;
     }
   }-*/;
 
@@ -333,5 +537,69 @@ public final class GwtRunner implements EntryPoint {
 
     @Override
     public void printSummary() {}
+  }
+
+  // TODO(johnlenz): remove this once GWT has a proper PrintStream implementation
+  private static class NodePrintStream extends PrintStream {
+    private String line = "";
+
+    NodePrintStream() {
+      super((OutputStream) null);
+    }
+
+    @Override
+    public void println(String s) {
+      print(s + "\n");
+    }
+
+    @Override
+    public void print(String s) {
+      if (useStdErr()) {
+        writeToStdErr(s);
+      } else {
+        writeFinishedLinesToConsole(s);
+      }
+    }
+
+    private void writeFinishedLinesToConsole(String s) {
+      line = line + s;
+      int start = 0;
+      int end = 0;
+      while ((end = line.indexOf('\n', start)) != -1) {
+        writeToConsole(line.substring(start, end));
+        start = end + 1;
+      }
+      line = line.substring(start);
+    }
+
+    private static native boolean useStdErr() /*-{
+      return !!(typeof process != "undefined" && process.stderr);
+    }-*/;
+
+    private native boolean writeToStdErr(String s) /*-{
+      process.stderr.write(s);
+    }-*/;
+
+
+    // NOTE: console methods always add a newline following the text.
+    private native void writeToConsole(String s) /*-{
+       console.log(s);
+    }-*/;
+
+    @Override
+    public void close() {
+    }
+
+    @Override
+    public void flush() {
+    }
+
+    @Override
+    public void write(byte[] buffer, int offset, int length) {
+    }
+
+    @Override
+    public void write(int oneByte) {
+    }
   }
 }

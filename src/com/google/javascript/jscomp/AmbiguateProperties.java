@@ -35,7 +35,6 @@ import com.google.javascript.rhino.jstype.JSType;
 import com.google.javascript.rhino.jstype.JSTypeNative;
 import com.google.javascript.rhino.jstype.JSTypeRegistry;
 import com.google.javascript.rhino.jstype.ObjectType;
-
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Comparator;
@@ -44,6 +43,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -257,10 +257,11 @@ class AmbiguateProperties implements CompilerPass {
         }
       }
     }
-
-    logger.fine("Collapsed " + numRenamedPropertyNames + " properties into "
-                + numNewPropertyNames + " and skipped renaming "
-                + numSkippedPropertyNames + " properties.");
+    if (logger.isLoggable(Level.FINE)) {
+      logger.fine("Collapsed " + numRenamedPropertyNames + " properties into "
+                  + numNewPropertyNames + " and skipped renaming "
+                  + numSkippedPropertyNames + " properties.");
+    }
   }
 
   private BitSet getRelatedTypesOnNonUnion(JSType type) {
@@ -463,8 +464,8 @@ class AmbiguateProperties implements CompilerPass {
             String renameFunctionName = target.getOriginalQualifiedName();
             if (renameFunctionName != null
                 && compiler.getCodingConvention().isPropertyRenameFunction(renameFunctionName)) {
-
-              if (n.getChildCount() != 2 && n.getChildCount() != 3) {
+              int childCount = n.getChildCount();
+              if (childCount != 2 && childCount != 3) {
                 compiler.report(
                     JSError.make(
                         n,
@@ -526,11 +527,11 @@ class AmbiguateProperties implements CompilerPass {
 
           // The children of an OBJECTLIT node are keys, where the values
           // are the children of the keys.
+          JSType jstype = getJSType(n);
           for (Node key = n.getFirstChild(); key != null; key = key.getNext()) {
             // We only want keys that were unquoted.
             // Keys are STRING, GET, SET
             if (!key.isQuotedString()) {
-              JSType jstype = getJSType(n.getFirstChild());
               maybeMarkCandidate(key, jstype);
             } else {
               // Ensure that we never rename some other property in a way

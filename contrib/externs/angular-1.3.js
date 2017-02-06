@@ -23,7 +23,6 @@
  *     $cookieStore
  *     $document
  *     $httpBackend
- *     $locale
  *     $rootElement
  *     $rootScope
  *     $rootScopeProvider
@@ -449,7 +448,7 @@ angular.LinkingFunctions.post = function(scope, iElement, iAttrs, controller) {
  *       function(!angular.JQLite=,!angular.Attributes=): string|
  *       undefined),
  *   templateNamespace: (string|undefined),
- *   templateUrl: (string|
+ *   templateUrl: (string|!Object|
  *       function(!angular.JQLite=,!angular.Attributes=)|
  *       undefined),
  *   terminal: (boolean|undefined),
@@ -523,7 +522,8 @@ angular.Directive.scope;
 angular.Directive.template;
 
 /**
- * @type {(string|function(!angular.JQLite=, !angular.Attributes=)|undefined)}
+ * @type {(string|!Object|function(!angular.JQLite=,
+ * !angular.Attributes=)|undefined)}
  */
 angular.Directive.templateUrl;
 
@@ -610,7 +610,7 @@ angular.JQLite.append = function(element) {};
 
 /**
  * @param {string} name
- * @param {(string|boolean)=} opt_value
+ * @param {(string|boolean|null)=} opt_value
  * @return {!angular.JQLite|string|boolean}
  */
 angular.JQLite.attr = function(name, opt_value) {};
@@ -1672,6 +1672,20 @@ angular.$interval_;
 angular.$interval_.cancel = function(promise) {};
 
 /******************************************************************************
+ * $locale Service
+ *****************************************************************************/
+
+/**
+ * @interface
+ */
+angular.$locale = function() {};
+
+/**
+ * @type {string}
+ */
+angular.$locale.prototype.id;
+
+/******************************************************************************
  * $location Service
  *****************************************************************************/
 
@@ -2253,7 +2267,7 @@ angular.$routeProvider.when = function(path, route) {};
  *   controller: (angular.Injectable|string|undefined),
  *   controllerAs: (string|undefined),
  *   template: (string|undefined),
- *   templateUrl: (string|function(!Object.<string,string>=)|undefined),
+ *   templateUrl: (string|!Object|function(!Object.<string,string>=)|undefined),
  *   resolve: (Object.<string, (
  *       string|angular.Injectable|!angular.$q.Promise
  *       )>|undefined),

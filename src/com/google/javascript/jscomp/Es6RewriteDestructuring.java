@@ -41,6 +41,7 @@ public final class Es6RewriteDestructuring implements NodeTraversal.Callback, Ho
 
   @Override
   public void process(Node externs, Node root) {
+    TranspilationPasses.processTranspile(compiler, externs, this);
     TranspilationPasses.processTranspile(compiler, root, this);
   }
 
@@ -87,8 +88,10 @@ public final class Es6RewriteDestructuring implements NodeTraversal.Callback, Ho
   private void visitParamList(Node paramList, Node function) {
     Node insertSpot = null;
     Node body = function.getLastChild();
-    for (int i = 0; i < paramList.getChildCount(); i++) {
-      Node param = paramList.getChildAtIndex(i);
+    int i = 0;
+    Node next = null;
+    for (Node param = paramList.getFirstChild(); param != null; param = next, i++) {
+      next = param.getNext();
       if (param.isDefaultValue()) {
         JSDocInfo jsDoc = param.getJSDocInfo();
         Node nameOrPattern = param.removeFirstChild();
@@ -163,7 +166,7 @@ public final class Es6RewriteDestructuring implements NodeTraversal.Callback, Ho
       Node function, Node insertSpot, Node patternParam, String tempVarName) {
     Node newParam = IR.name(tempVarName);
     newParam.setJSDocInfo(patternParam.getJSDocInfo());
-    patternParam.getParent().replaceChild(patternParam, newParam);
+    patternParam.replaceWith(newParam);
     Node newDecl = IR.var(patternParam, IR.name(tempVarName));
     function.getLastChild().addChildAfter(newDecl, insertSpot);
     return newDecl;
@@ -452,7 +455,7 @@ public final class Es6RewriteDestructuring implements NodeTraversal.Callback, Ho
     String tempVarName = DESTRUCTURING_TEMP_VAR + (destructuringVarCounter++);
     Node catchBlock = pattern.getNext();
 
-    pattern.getParent().replaceChild(pattern, IR.name(tempVarName));
+    pattern.replaceWith(IR.name(tempVarName));
     catchBlock.addChildToFront(IR.declaration(pattern, IR.name(tempVarName), Token.LET));
   }
 

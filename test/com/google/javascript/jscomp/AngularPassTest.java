@@ -48,7 +48,6 @@ public final class AngularPassTest extends Es6CompilerTestCase {
   }
 
   public void testNgInjectSetVisibility() throws Exception {
-    compareJsDoc = true;
     test("/** @ngInject */ function fn(a, b) {}",
         "/** @ngInject */ function fn(a, b) {} /** @public */ fn['$inject']=['a', 'b']");
   }
@@ -453,8 +452,7 @@ public final class AngularPassTest extends Es6CompilerTestCase {
   public void testNgInjectToArrowFunctions() {
     testEs6("/** @ngInject */ var fn = (a, b, c)=>{};",
         "/** @ngInject */ var fn = (a, b, c)=>{}; /** @public */ fn['$inject']=['a', 'b', 'c'];");
-    testEs6("/** @ngInject */ var fn = ()=>{}",
-            "/** @ngInject */ var fn = ()=>{}");
+    testSameEs6("/** @ngInject */ var fn = ()=>{}");
   }
 
   public void testNgInjectToFunctionsWithDestructuredParam() {

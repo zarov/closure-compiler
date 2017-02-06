@@ -43,7 +43,6 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.javascript.rhino.ErrorReporter;
 import com.google.javascript.rhino.Node;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -153,8 +152,8 @@ public class NamedType extends ProxyObjectType {
   }
 
   @Override
-  String toStringHelper(boolean forAnnotations) {
-    return reference;
+  StringBuilder appendTo(StringBuilder sb, boolean forAnnotations) {
+    return sb.append(this.reference);
   }
 
   @Override
@@ -397,6 +396,14 @@ public class NamedType extends ProxyObjectType {
       target.defineProperty(
           propertyName, type, inferred, propertyNode);
     }
+  }
+
+  @Override
+  public boolean isObject() {
+    if (isEnumElementType()) {
+      return toMaybeEnumElementType().isObject();
+    }
+    return super.isObject();
   }
 
   @Override

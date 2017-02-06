@@ -110,7 +110,6 @@ public class J2clConstantHoisterPass implements CompilerPass {
     // a bug and GWT never assumed this state is observable in its optimization, yet nobody
     // complained. So it is safe to upgrade it to a constant.
     hoistConstantLikeField(firstAssignment, secondAssignment);
-    compiler.reportCodeChange();
   }
 
   private void hoistConstantLikeField(Node clinitAssignment, Node declarationAssignment) {
@@ -128,6 +127,9 @@ public class J2clConstantHoisterPass implements CompilerPass {
 
     // Sanity check
     checkState(NodeUtil.isLiteralValue(declarationAssignedValue, false /* includeFunctions */));
+
+    compiler.reportChangeToEnclosingScope(clinitAssignment);
+    compiler.reportChangeToEnclosingScope(declarationAssignment);
   }
 
   private static boolean isClassFieldInitialization(Node node) {
@@ -139,8 +141,8 @@ public class J2clConstantHoisterPass implements CompilerPass {
 
   private static boolean isClinitFieldAssignment(Node node) {
     return node.getParent().isExprResult()
-        && node.getParent().getParent().isBlock()
-        && isClinitMethod(node.getParent().getParent().getParent());
+        && node.getGrandparent().isNormalBlock()
+        && isClinitMethod(node.getGrandparent().getParent());
   }
 
   // TODO(goktug): Create a utility to share this logic and start using getQualifiedOriginalName.

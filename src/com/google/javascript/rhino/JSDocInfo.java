@@ -153,6 +153,7 @@ public class JSDocInfo implements Serializable {
           .toString();
     }
 
+    @SuppressWarnings("MissingOverride")  // Adding @Override breaks the GWT compilation.
     protected LazilyInitializedInfo clone() {
       return clone(false);
     }
@@ -361,7 +362,6 @@ public class JSDocInfo implements Serializable {
    */
   public static final class Marker {
     private TrimmedStringPosition annotation;
-    private TrimmedStringPosition name;
     private NamePosition nameNode;
     private StringPosition description;
     private TypePosition type;
@@ -375,20 +375,6 @@ public class JSDocInfo implements Serializable {
 
     void setAnnotation(TrimmedStringPosition p) {
       annotation = p;
-    }
-
-    /**
-     * Gets the position information for the name found
-     * in a @param tag.
-     * @deprecated Use #getNameNode
-     */
-    @Deprecated
-    public StringPosition getName() {
-      return name;
-    }
-
-    void setName(TrimmedStringPosition p) {
-      name = p;
     }
 
     /**
@@ -437,7 +423,6 @@ public class JSDocInfo implements Serializable {
       }
 
       return TrimmedStringPosition.areEquivalent(m1.annotation, m2.annotation)
-          && TrimmedStringPosition.areEquivalent(m1.name, m2.name)
           && NamePosition.areEquivalent(m1.nameNode, m2.nameNode)
           && StringPosition.areEquivalent(m1.description, m2.description)
           && TypePosition.areEquivalent(m1.type, m2.type);
@@ -554,6 +539,7 @@ public class JSDocInfo implements Serializable {
   // Visible for testing.
   JSDocInfo() {}
 
+  @SuppressWarnings("MissingOverride")  // Adding @Override breaks the GWT compilation.
   public JSDocInfo clone() {
     return clone(false);
   }
@@ -1428,6 +1414,9 @@ public class JSDocInfo implements Serializable {
    */
   public String getParameterNameAt(int index) {
     if (info == null || info.parameters == null) {
+      return null;
+    }
+    if (index >= info.parameters.size()) {
       return null;
     }
     return Iterables.get(info.parameters.keySet(), index);

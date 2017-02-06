@@ -15,6 +15,7 @@
  */
 package com.google.javascript.jscomp;
 
+import static com.google.common.truth.Truth.assertThat;
 import static com.google.javascript.jscomp.PolymerPassErrors.POLYMER_DESCRIPTOR_NOT_VALID;
 import static com.google.javascript.jscomp.PolymerPassErrors.POLYMER_INVALID_DECLARATION;
 import static com.google.javascript.jscomp.PolymerPassErrors.POLYMER_INVALID_EXTENDS;
@@ -25,6 +26,10 @@ import static com.google.javascript.jscomp.PolymerPassErrors.POLYMER_UNANNOTATED
 import static com.google.javascript.jscomp.PolymerPassErrors.POLYMER_UNEXPECTED_PARAMS;
 import static com.google.javascript.jscomp.PolymerPassErrors.POLYMER_UNQUALIFIED_BEHAVIOR;
 import static com.google.javascript.jscomp.TypeValidator.TYPE_MISMATCH_WARNING;
+import static com.google.javascript.jscomp.testing.NodeSubject.assertNode;
+
+import com.google.javascript.jscomp.NodeUtil.Visitor;
+import com.google.javascript.rhino.Node;
 
 /**
  * Unit tests for PolymerPass
@@ -156,6 +161,7 @@ public class PolymerPassTest extends Es6CompilerTestCase {
     super.setUp();
     allowExternsChanges(true);
     enableTypeCheck();
+    enableCheckAccessControls(false);
     runTypeCheckAfterProcessing = true;
     parseTypeInfo = true;
   }
@@ -564,6 +570,19 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "    thingToDo: Function,",
             "  },",
             "});"));
+  }
+
+  public void testPropertiesObjLitShorthand() {
+    disableTypeCheck();
+    testErrorEs6(
+        LINE_JOINER.join(
+            "var XElem = Polymer({",
+            "  is: 'x-element',",
+            "  properties: {",
+            "    name,",
+            "  },",
+            "});"),
+        POLYMER_SHORTHAND_NOT_SUPPORTED);
   }
 
   public void testPropertiesDefaultValueFunctions() {
@@ -1070,7 +1089,6 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  },",
             "  behaviors: [ FunBehavior ],",
             "});"),
-
         LINE_JOINER.join(
             "/** @polymerBehavior @nocollapse */",
             "var FunBehavior = {",
@@ -1086,13 +1104,13 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  /** @type {string} */",
             "  foo: 'hooray',",
             "",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  get someNumber() {",
             "    return 5*7+2;",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomethingFun: function(funAmount) { alert('Something ' + funAmount + ' fun!'); },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  created: function() {}",
             "};",
             "/** @constructor @extends {PolymerElement} @implements {PolymerAInterface}*/",
@@ -1103,7 +1121,10 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "A.prototype.pets;",
             "/** @type {string} */",
             "A.prototype.name;",
-            "/** @param {string} funAmount */",
+            "/**",
+            " * @param {string} funAmount",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomethingFun = function(funAmount) {",
             "  alert('Something ' + funAmount + ' fun!');",
             "};",
@@ -1122,6 +1143,100 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  },",
             "  behaviors: [ FunBehavior ],",
             "});"));
+
+    // The original doSomethingFun definition in FunBehavior is on line 21, so make sure that
+    // line number is preserved when it's copied into the Polymer() call.
+    Node root = getLastCompiler().getRoot();
+    DoSomethingFunFinder visitor = new DoSomethingFunFinder();
+    NodeUtil.visitPreOrder(root, visitor);
+    assertThat(visitor.found).isTrue();
+  }
+
+  private static class DoSomethingFunFinder implements Visitor {
+    boolean found = false;
+
+    @Override
+    public void visit(Node n) {
+      if (n.matchesQualifiedName("A.prototype.doSomethingFun")) {
+        assertNode(n).hasLineno(21);
+        found = true;
+      }
+    }
+  }
+
+  /** If a behavior method is {@code @protected} there is no visibility warning. */
+  public void testBehaviorWithProtectedMethod() {
+    enableCheckAccessControls(true);
+    test(
+        new String[] {
+          LINE_JOINER.join(
+              "/** @polymerBehavior */",
+              "var FunBehavior = {",
+              "  /** @protected */",
+              "  doSomethingFun: function() {},",
+              "};"),
+          LINE_JOINER.join(
+              "var A = Polymer({",
+              "  is: 'x-element',",
+              "  callBehaviorMethod: function() {",
+              "    this.doSomethingFun();",
+              "  },",
+              "  behaviors: [ FunBehavior ],",
+              "});"),
+        },
+        new String[] {
+          LINE_JOINER.join(
+              "/** @polymerBehavior @nocollapse */",
+              "var FunBehavior = {",
+              "  /**",
+              "   * @suppress {checkTypes|globalThis|visibility}",
+              "   */",
+              "  doSomethingFun: function() {},",
+              "};"),
+          LINE_JOINER.join(
+              "/**",
+              " * @constructor",
+              " * @extends {PolymerElement}",
+              " * @implements {PolymerAInterface}",
+              " */",
+              "var A = function() {};",
+              "",
+              "/**",
+              " * @public",
+              " * @suppress {unusedPrivateMembers}",
+              " */",
+              "A.prototype.doSomethingFun = function(){};",
+              "",
+              "A = Polymer(/** @lends {A.prototype} */ {",
+              "  is: 'x-element',",
+              "  /** @this {A} */",
+              "  callBehaviorMethod: function(){ this.doSomethingFun(); },",
+              "  behaviors: [FunBehavior],",
+              "})"),
+        });
+  }
+
+  /** If a behavior method is {@code @private} there is a visibility warning. */
+  public void testBehaviorWithPrivateMethod() {
+    enableCheckAccessControls(true);
+    testWarning(
+        new String[] {
+          LINE_JOINER.join(
+              "/** @polymerBehavior */",
+              "var FunBehavior = {",
+              "  /** @private */",
+              "  doSomethingFun: function() {},",
+              "};"),
+          LINE_JOINER.join(
+              "var A = Polymer({",
+              "  is: 'x-element',",
+              "  callBehaviorMethod: function() {",
+              "    this.doSomethingFun();",
+              "  },",
+              "  behaviors: [ FunBehavior ],",
+              "});"),
+        },
+        CheckAccessControls.BAD_PRIVATE_PROPERTY_ACCESS);
   }
 
   /**
@@ -1155,7 +1270,7 @@ public class PolymerPassTest extends Es6CompilerTestCase {
         LINE_JOINER.join(
             "/** @polymerBehavior @nocollapse */",
             "var FunBehavior = {",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomethingFun: function(funAmount) { alert('Something ' + funAmount + ' fun!'); },",
             "};",
             "/** @constructor @extends {PolymerElement} @implements {PolymerAInterface}*/",
@@ -1208,7 +1323,7 @@ public class PolymerPassTest extends Es6CompilerTestCase {
         LINE_JOINER.join(
             "/** @polymerBehavior @nocollapse */",
             "var FunBehavior = {",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomethingFun(funAmount) { alert('Something ' + funAmount + ' fun!'); },",
             "};",
             "",
@@ -1273,12 +1388,12 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "    },",
             "    funObject: {",
             "      type: Object,",
-            "      /** @suppress {checkTypes|globalThis} */",
+            "      /** @suppress {checkTypes|globalThis|visibility} */",
             "      value: function() { return {fun: this.isFun }; },",
             "    },",
             "    funArray: {",
             "      type: Array,",
-            "      /** @suppress {checkTypes|globalThis} */",
+            "      /** @suppress {checkTypes|globalThis|visibility} */",
             "      value: function() { return [this.isFun]; },",
             "    },",
             "  },",
@@ -1346,16 +1461,15 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  },",
             "  behaviors: [ SuperCoolBehaviors, BoringBehavior ],",
             "});"),
-
         LINE_JOINER.join(
             "/** @polymerBehavior @nocollapse */",
             "var FunBehavior = {",
             "  properties: {",
             "    isFun: Boolean",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomethingFun: function(funAmount) { alert('Something ' + funAmount + ' fun!'); },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  created: function() {}",
             "};",
             "/** @polymerBehavior @nocollapse */",
@@ -1363,9 +1477,9 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  properties: {",
             "    howRad: Number",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomethingRad: function(radAmount) { alert('Something ' + radAmount + ' rad!'); },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  ready: function() {}",
             "};",
             "/** @polymerBehavior @nocollapse */",
@@ -1375,7 +1489,7 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  properties: {",
             "    boringString: String",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomething: function(boredYet) { alert(boredYet + ' ' + this.boringString); },",
             "};",
             "/** @constructor @extends {PolymerElement} @implements {PolymerAInterface}*/",
@@ -1390,15 +1504,24 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "A.prototype.pets;",
             "/** @type {string} */",
             "A.prototype.name;",
-            "/** @param {string} funAmount */",
+            "/**",
+            " * @param {string} funAmount",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomethingFun = function(funAmount) {",
             "  alert('Something ' + funAmount + ' fun!');",
             "};",
-            "/** @param {number} radAmount */",
+            "/**",
+            " * @param {number} radAmount",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomethingRad = function(radAmount) {",
             "  alert('Something ' + radAmount + ' rad!');",
             "};",
-            "/** @param {boolean} boredYet */",
+            "/**",
+            " * @param {boolean} boredYet",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomething = function(boredYet) {",
             "  alert(boredYet + ' ' + this.boringString);",
             "};",
@@ -1449,16 +1572,15 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  },",
             "  behaviors: [ SuperCoolBehaviors ],",
             "});"),
-
         LINE_JOINER.join(
             "/** @polymerBehavior @nocollapse */",
             "var FunBehavior = {",
             "  properties: {",
             "    isFun: Boolean",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomethingFun: function(funAmount) { alert('Something ' + funAmount + ' fun!'); },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  created: function() {}",
             "};",
             "/** @polymerBehavior @nocollapse */",
@@ -1466,9 +1588,9 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  properties: {",
             "    howRad: Number",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomethingRad: function(radAmount) { alert('Something ' + radAmount + ' rad!'); },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  ready: function() {}",
             "}];",
             "/** @constructor @extends {PolymerElement} @implements {PolymerAInterface}*/",
@@ -1481,11 +1603,17 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "A.prototype.pets;",
             "/** @type {string} */",
             "A.prototype.name;",
-            "/** @param {string} funAmount */",
+            "/**",
+            " * @param {string} funAmount",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomethingFun = function(funAmount) {",
             "  alert('Something ' + funAmount + ' fun!');",
             "};",
-            "/** @param {number} radAmount */",
+            "/**",
+            " * @param {number} radAmount",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomethingRad = function(radAmount) {",
             "  alert('Something ' + radAmount + ' rad!');",
             "};",
@@ -1550,16 +1678,15 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  },",
             "  behaviors: [ SuperCoolBehaviors, BoringBehavior ],",
             "});"),
-
         LINE_JOINER.join(
             "/** @polymerBehavior @nocollapse */",
             "var FunBehavior = {",
             "  properties: {",
             "    isFun: Boolean",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomething: function(boredYet) { alert(boredYet + ' ' + this.isFun); },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  created: function() {}",
             "};",
             "/** @polymerBehavior @nocollapse */",
@@ -1567,9 +1694,9 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  properties: {",
             "    howRad: Number",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomething: function(boredYet) { alert(boredYet + ' ' + this.howRad); },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  ready: function() {}",
             "};",
             "/** @polymerBehavior @nocollapse */",
@@ -1579,7 +1706,7 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  properties: {",
             "    boringString: String",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomething: function(boredYet) { alert(boredYet + ' ' + this.boringString); },",
             "};",
             "/** @constructor @extends {PolymerElement} @implements {PolymerAInterface}*/",
@@ -1594,7 +1721,10 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "A.prototype.pets;",
             "/** @type {string} */",
             "A.prototype.name;",
-            "/** @param {boolean} boredYet */",
+            "/**",
+            " * @param {boolean} boredYet",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomething = function(boredYet) {",
             "  alert(boredYet + ' ' + this.boringString);",
             "};",
@@ -1655,14 +1785,13 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  },",
             "  behaviors: [ SuperCoolBehaviors, BoringBehavior ],",
             "});"),
-
         LINE_JOINER.join(
             "/** @polymerBehavior @nocollapse */",
             "var FunBehavior = {",
             "  properties: {",
             "    isFun: Boolean",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomething(boredYet) { alert(boredYet + ' ' + this.isFun); },",
             "};",
             "",
@@ -1671,7 +1800,7 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  properties: {",
             "    howRad: Number",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomething(boredYet) { alert(boredYet + ' ' + this.howRad); },",
             "};",
             "",
@@ -1682,7 +1811,7 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  properties: {",
             "    boringString: String",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomething(boredYet) { alert(boredYet + ' ' + this.boringString); },",
             "};",
             "",
@@ -1699,7 +1828,10 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "A.prototype.pets;",
             "/** @type {string} */",
             "A.prototype.name;",
-            "/** @param {boolean} boredYet */",
+            "/**",
+            " * @param {boolean} boredYet",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomething = function(boredYet) {",
             "  alert(boredYet + ' ' + this.boringString);",
             "};",
@@ -1756,9 +1888,9 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "      readOnly: true,",
             "    },",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomethingFun: function(funAmount) { alert('Something ' + funAmount + ' fun!'); },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  created: function() {}",
             "};",
             "/** @constructor @extends {PolymerElement} @implements {PolymerAInterface}*/",
@@ -1769,7 +1901,10 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "A.prototype.pets;",
             "/** @type {string} */",
             "A.prototype.name;",
-            "/** @param {string} funAmount */",
+            "/**",
+            " * @param {string} funAmount",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomethingFun = function(funAmount) {",
             "  alert('Something ' + funAmount + ' fun!');",
             "};",
@@ -1832,7 +1967,6 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  },",
             "  behaviors: [ Polymer.FunBehavior ],",
             "});"),
-
         LINE_JOINER.join(
             "(function() {",
             "  /** @polymerBehavior @nocollapse */",
@@ -1845,15 +1979,15 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "    },",
             "    /** @type {string} */",
             "    foo: 'hooray',",
-            "    /** @suppress {checkTypes|globalThis} */",
+            "    /** @suppress {checkTypes|globalThis|visibility} */",
             "    get someNumber() {",
             "      return 5*7+2;",
             "    },",
-            "    /** @suppress {checkTypes|globalThis} */",
+            "    /** @suppress {checkTypes|globalThis|visibility} */",
             "    doSomethingFun: function(funAmount) {",
             "      alert('Something ' + funAmount + ' fun!');",
             "    },",
-            "    /** @suppress {checkTypes|globalThis} */",
+            "    /** @suppress {checkTypes|globalThis|visibility} */",
             "    created: function() {}",
             "  };",
             "})();",
@@ -1865,7 +1999,10 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "A.prototype.pets;",
             "/** @type {string} */",
             "A.prototype.name;",
-            "/** @param {string} funAmount */",
+            "/**",
+            " * @param {string} funAmount",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomethingFun = function(funAmount) {};",
             "/** @type {string} */",
             "A.prototype.foo;",
@@ -1922,16 +2059,15 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  },",
             "  behaviors: [ SuperCoolBehaviors, FunBehavior ],",
             "});"),
-
         LINE_JOINER.join(
             "/** @polymerBehavior @nocollapse */",
             "var FunBehavior = {",
             "  properties: {",
             "    isFun: Boolean",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomethingFun: function(funAmount) { alert('Something ' + funAmount + ' fun!'); },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  created: function() {}",
             "};",
             "/** @polymerBehavior @nocollapse */",
@@ -1939,9 +2075,9 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "  properties: {",
             "    howRad: Number",
             "  },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  doSomethingRad: function(radAmount) { alert('Something ' + radAmount + ' rad!'); },",
-            "  /** @suppress {checkTypes|globalThis} */",
+            "  /** @suppress {checkTypes|globalThis|visibility} */",
             "  ready: function() {}",
             "};",
             "/** @polymerBehavior @nocollapse */",
@@ -1956,11 +2092,17 @@ public class PolymerPassTest extends Es6CompilerTestCase {
             "A.prototype.pets;",
             "/** @type {string} */",
             "A.prototype.name;",
-            "/** @param {number} radAmount */",
+            "/**",
+            " * @param {number} radAmount",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomethingRad = function(radAmount) {",
             "  alert('Something ' + radAmount + ' rad!');",
             "};",
-            "/** @param {string} funAmount */",
+            "/**",
+            " * @param {string} funAmount",
+            " * @suppress {unusedPrivateMembers}",
+            " */",
             "A.prototype.doSomethingFun = function(funAmount) {",
             "  alert('Something ' + funAmount + ' fun!');",
             "};",

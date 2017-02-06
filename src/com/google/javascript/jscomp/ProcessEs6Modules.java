@@ -19,7 +19,6 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableSet;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
-import com.google.javascript.jscomp.ProcessCommonJSModules.FindGoogProvideOrGoogModule;
 import com.google.javascript.jscomp.deps.ModuleLoader;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
@@ -27,7 +26,6 @@ import com.google.javascript.rhino.JSDocInfoBuilder;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -106,6 +104,43 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
     NodeTraversal.traverseEs6(compiler, root, this);
   }
 
+  /**
+   * Avoid processing if we find the appearance of goog.provide or goog.module.
+   *
+   * <p>TODO(moz): Let ES6, CommonJS and goog.provide live happily together.
+   */
+  static class FindGoogProvideOrGoogModule extends NodeTraversal.AbstractPreOrderCallback {
+
+    private boolean found;
+
+    boolean isFound() {
+      return found;
+    }
+
+    @Override
+    public boolean shouldTraverse(NodeTraversal nodeTraversal, Node n, Node parent) {
+      if (found) {
+        return false;
+      }
+      // Shallow traversal, since we don't need to inspect within functions or expressions.
+      if (parent == null
+          || NodeUtil.isControlStructure(parent)
+          || NodeUtil.isStatementBlock(parent)) {
+        if (n.isExprResult()) {
+          Node maybeGetProp = n.getFirstFirstChild();
+          if (maybeGetProp != null
+              && (maybeGetProp.matchesQualifiedName("goog.provide")
+                  || maybeGetProp.matchesQualifiedName("goog.module"))) {
+            found = true;
+            return false;
+          }
+        }
+        return true;
+      }
+      return false;
+    }
+  }
+
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     if (n.isImport()) {
@@ -130,7 +165,21 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
       // These are rewritten to plain namespace object accesses.
       moduleName = importName.substring("goog:".length());
     } else {
-      moduleName = t.getInput().getUri().resolveEs6Module(importName).toModuleName();
+      ModuleLoader.ModulePath modulePath =
+          t.getInput()
+              .getPath()
+              .resolveJsModule(
+                  importName,
+                  importDecl.getSourceFileName(),
+                  importDecl.getLineno(),
+                  importDecl.getCharno());
+      if (modulePath == null) {
+        // The module loader issues an error
+        // Fall back to assuming the module is a file path
+        modulePath = t.getInput().getPath().resolveModuleAsPath(importName);
+      }
+
+      moduleName = modulePath.toModuleName();
     }
 
     for (Node child : importDecl.children()) {
@@ -143,7 +192,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
       } else if (child.getToken() == Token.IMPORT_SPECS) {
         for (Node grandChild : child.children()) {
           String origName = grandChild.getFirstChild().getString();
-          if (grandChild.getChildCount() == 2) { // import {a as foo} from "mod"
+          if (grandChild.hasTwoChildren()) { // import {a as foo} from "mod"
             importMap.put(
                 grandChild.getLastChild().getString(),
                 new ModuleOriginalNamePair(moduleName, origName));
@@ -175,7 +224,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
     if (alreadyRequired.add(moduleName)) {
       Node require = IR.exprResult(
           IR.call(NodeUtil.newQName(compiler, "goog.require"), IR.string(moduleName)));
-      require.copyInformationFromForTree(importDecl);
+      require.useSourceInfoIfMissingFromForTree(importDecl);
       script.addChildAfter(require, googRequireInsertSpot);
       googRequireInsertSpot = require;
       t.getInput().addRequire(moduleName);
@@ -227,7 +276,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
       //   export * from 'moduleIdentifier';
       compiler.report(JSError.make(export, Es6ToEs3Converter.CANNOT_CONVERT_YET,
           "Wildcard export"));
-    } else if (export.getChildCount() == 2) {
+    } else if (export.hasTwoChildren()) {
       //   export {x, y as z} from 'moduleIdentifier';
       Node moduleIdentifier = export.getLastChild();
       Node importNode = new Node(Token.IMPORT, moduleIdentifier.cloneNode());
@@ -235,8 +284,18 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
       parent.addChildBefore(importNode, export);
       visit(t, importNode, parent);
 
-      String moduleName =
-          t.getInput().getUri().resolveEs6Module(moduleIdentifier.getString()).toModuleName();
+      ModuleLoader.ModulePath path =
+          t.getInput()
+              .getPath()
+              .resolveJsModule(
+                  moduleIdentifier.getString(),
+                  export.getSourceFileName(),
+                  export.getLineno(),
+                  export.getCharno());
+      if (path == null) {
+        path = t.getInput().getPath().resolveModuleAsPath(moduleIdentifier.getString());
+      }
+      String moduleName = path.toModuleName();
 
       for (Node exportSpec : export.getFirstChild().children()) {
         String nameFromOtherModule = exportSpec.getFirstChild().getString();
@@ -251,7 +310,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
         for (Node exportSpec : export.getFirstChild().children()) {
           Node origName = exportSpec.getFirstChild();
           exportMap.put(
-              exportSpec.getChildCount() == 2
+              exportSpec.hasTwoChildren()
                   ? exportSpec.getLastChild().getString()
                   : origName.getString(),
               new NameNodePair(origName.getString(), exportSpec));
@@ -262,13 +321,13 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
         //    export function Foo() {}
         // etc.
         Node declaration = export.getFirstChild();
-        for (int i = 0; i < declaration.getChildCount(); i++) {
-          Node maybeName = declaration.getChildAtIndex(i);
+        Node first = declaration.getFirstChild();
+        for (Node maybeName = first; maybeName != null; maybeName = maybeName.getNext()) {
           if (!maybeName.isName()) {
             break;
           }
           // Break out on "B" in "class A extends B"
-          if (declaration.isClass() && i > 0) {
+          if (declaration.isClass() && maybeName != first) {
             break;
           }
           String name = maybeName.getString();
@@ -310,7 +369,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
     // ES6 module.
     rewriteRequires(script);
 
-    String moduleName = t.getInput().getUri().toModuleName();
+    String moduleName = t.getInput().getPath().toModuleName();
 
     for (Map.Entry<String, NameNodePair> entry : exportMap.entrySet()) {
       String exportedName = entry.getKey();
@@ -356,7 +415,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
       Node googProvide = IR.exprResult(
           IR.call(NodeUtil.newQName(compiler, "goog.provide"),
               IR.string(moduleName)));
-      script.addChildToFront(googProvide.copyInformationFromForTree(script));
+      script.addChildToFront(googProvide.useSourceInfoIfMissingFromForTree(script));
       t.getInput().addProvide(moduleName);
     }
 
@@ -476,10 +535,9 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
           ModuleOriginalNamePair pair = importMap.get(name);
           Node moduleAccess = NodeUtil.newQName(compiler, pair.module);
           if (pair.originalName.isEmpty()) {
-            n.getParent().replaceChild(
-                n, moduleAccess.useSourceInfoIfMissingFromForTree(n));
+            n.replaceWith(moduleAccess.useSourceInfoIfMissingFromForTree(n));
           } else {
-            n.getParent().replaceChild(n,
+            n.replaceWith(
                 IR.getprop(moduleAccess, IR.string(pair.originalName))
                     .useSourceInfoIfMissingFromForTree(n));
           }
@@ -494,7 +552,7 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
     private void fixTypeNode(NodeTraversal t, Node typeNode) {
       if (typeNode.isString()) {
         String name = typeNode.getString();
-        if (ModuleLoader.isRelativeIdentifier(name) || ModuleLoader.isAbsoluteIdentifier(name)) {
+        if (ModuleLoader.isPathIdentifier(name)) {
           int lastSlash = name.lastIndexOf('/');
           int endIndex = name.indexOf('.', lastSlash);
           String localTypeName = null;
@@ -505,8 +563,20 @@ public final class ProcessEs6Modules extends AbstractPostOrderCallback {
           }
 
           String moduleName = name.substring(0, endIndex);
-          String globalModuleName =
-              t.getInput().getUri().resolveEs6Module(moduleName).toModuleName();
+          ModuleLoader.ModulePath path =
+              t.getInput()
+                  .getPath()
+                  .resolveJsModule(
+                      moduleName,
+                      typeNode.getSourceFileName(),
+                      typeNode.getLineno(),
+                      typeNode.getCharno());
+
+          if (path == null) {
+            path = t.getInput().getPath().resolveModuleAsPath(moduleName);
+          }
+          String globalModuleName = path.toModuleName();
+
           typeNode.setString(
               localTypeName == null ? globalModuleName : globalModuleName + localTypeName);
         } else {

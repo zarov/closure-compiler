@@ -20,7 +20,6 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.Files;
 import com.google.common.io.Resources;
@@ -116,7 +115,7 @@ public final class RefasterJsScanner extends Scanner {
       try {
         initialize(metadata.getCompiler());
       } catch (Exception e) {
-        Throwables.propagate(e);
+        throw new RuntimeException(e);
       }
     }
     matchedTemplate = null;
@@ -140,7 +139,8 @@ public final class RefasterJsScanner extends Scanner {
     // If the template is a multiline template, make sure to delete the same number of sibling nodes
     // as the template has.
     Node n = match.getNode().getNext();
-    for (int i = 1; i < matchedTemplate.beforeTemplate.getLastChild().getChildCount(); i++) {
+    int count = matchedTemplate.beforeTemplate.getLastChild().getChildCount();
+    for (int i = 1; i < count; i++) {
       Preconditions.checkNotNull(
           n, "Found mismatched sibling count between before template and matched node.\n"
           + "Template: %s\nMatch: %s",

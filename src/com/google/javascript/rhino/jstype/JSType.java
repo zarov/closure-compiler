@@ -45,6 +45,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.javascript.rhino.ErrorReporter;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.TypeI;
@@ -78,8 +79,8 @@ public abstract class JSType implements TypeI, Serializable {
   private static final CanCastToVisitor CAN_CAST_TO_VISITOR =
       new CanCastToVisitor();
 
-  private static final ImmutableList<String> COVARIANT_TYPES =
-      ImmutableList.of("Object", "IArrayLike", "Array");
+  private static final ImmutableSet<String> COVARIANT_TYPES =
+      ImmutableSet.of("Object", "IArrayLike", "Array");
 
   /**
    * Total ordering on types based on their textual representation.
@@ -249,10 +250,12 @@ public abstract class JSType implements TypeI, Serializable {
     return false;
   }
 
+  @Override
   public boolean isNullType() {
     return false;
   }
 
+  @Override
   public boolean isVoidType() {
     return false;
   }
@@ -300,7 +303,10 @@ public abstract class JSType implements TypeI, Serializable {
     // Check if this is a union that contains an array
     if (this.isUnionType()) {
       JSType arrayType = registry.getNativeType(JSTypeNative.ARRAY_TYPE);
-      for (JSType alternate : this.toMaybeUnionType().getAlternates()) {
+      // use an indexed loop to avoid allocations
+      ImmutableList<JSType> alternatesList = this.toMaybeUnionType().getAlternatesList();
+      for (int i = 0; i < alternatesList.size(); i++) {
+        JSType alternate = alternatesList.get(i);
         if (alternate.isSubtype(arrayType)) {
           return true;
         }
@@ -729,9 +735,7 @@ public abstract class JSType implements TypeI, Serializable {
   }
 
   @Override
-  public int hashCode() {
-    return System.identityHashCode(this);
-  }
+  public abstract int hashCode();
 
   /**
    * This predicate is used to test whether a given type can appear in a
@@ -1045,6 +1049,11 @@ public abstract class JSType implements TypeI, Serializable {
     return getGreatestSubtype(this, that);
   }
 
+  @Override
+  public TypeI meetWith(TypeI that) {
+    return getGreatestSubtype(this, (JSType) that);
+  }
+
   /**
    * A generic implementation meant to be used as a helper for common
    * getGreatestSubtype implementations.
@@ -1119,7 +1128,9 @@ public abstract class JSType implements TypeI, Serializable {
     } else if (type.isUnionType()) {
       UnionType unionType = type.toMaybeUnionType();
       boolean needsFiltering = false;
-      for (JSType alt : unionType.getAlternates()) {
+      ImmutableList<JSType> alternatesList = unionType.getAlternatesList();
+      for (int i = 0; i < alternatesList.size(); i++) {
+        JSType alt = alternatesList.get(i);
         if (alt.isNoResolvedType()) {
           needsFiltering = true;
           break;
@@ -1129,7 +1140,8 @@ public abstract class JSType implements TypeI, Serializable {
       if (needsFiltering) {
         UnionTypeBuilder builder = new UnionTypeBuilder(type.registry);
         builder.addAlternate(type.getNativeType(JSTypeNative.NO_RESOLVED_TYPE));
-        for (JSType alt : unionType.getAlternates()) {
+        for (int i = 0; i < alternatesList.size(); i++) {
+          JSType alt = alternatesList.get(i);
           if (!alt.isNoResolvedType()) {
             builder.addAlternate(alt);
           }
@@ -1399,7 +1411,11 @@ public abstract class JSType implements TypeI, Serializable {
     // unions
     if (thatType.isUnionType()) {
       UnionType union = thatType.toMaybeUnionType();
-      for (JSType element : union.alternatesWithoutStucturalTyping) {
+      // use an indexed for-loop to avoid allocations
+      ImmutableList<JSType> alternatesWithoutStucturalTyping =
+          union.alternatesWithoutStucturalTyping;
+      for (int i = 0; i < alternatesWithoutStucturalTyping.size(); i++) {
+        JSType element = alternatesWithoutStucturalTyping.get(i);
         if (thisType.isSubtype(element, implicitImplCache, subtypingMode)) {
           return true;
         }
@@ -1562,7 +1578,7 @@ public abstract class JSType implements TypeI, Serializable {
    */
   @Override
   public String toString() {
-    return toStringHelper(false);
+    return appendTo(new StringBuilder(), false).toString();
   }
 
   /**
@@ -1576,22 +1592,27 @@ public abstract class JSType implements TypeI, Serializable {
   /**
    * A string representation of this type, suitable for printing
    * in type annotations at code generation time.
+   *
+   * Don't call from this package; use appendAsNonNull instead.
    */
   public final String toAnnotationString() {
-    return toStringHelper(true);
+    return appendTo(new StringBuilder(), true).toString();
   }
 
+  // Don't call from this package; use appendAsNonNull instead.
   public final String toNonNullAnnotationString() {
-    return !isUnknownType() && !isTemplateType() && !isRecordType() && isObject()
-        ? "!" + toAnnotationString()
-        : toAnnotationString();
+    return appendAsNonNull(new StringBuilder(), true).toString();
   }
 
-  /**
-   * @param forAnnotations Whether this is for use in code generator
-   *     annotations. Otherwise, it's for warnings.
-   */
-  abstract String toStringHelper(boolean forAnnotations);
+  final StringBuilder appendAsNonNull(StringBuilder sb, boolean forAnnotations) {
+    if (forAnnotations && isObject()
+        && !isUnknownType() && !isTemplateType() && !isRecordType() && !isFunctionType()) {
+      sb.append("!");
+    }
+    return appendTo(sb, forAnnotations);
+  }
+
+  abstract StringBuilder appendTo(StringBuilder sb, boolean forAnnotations);
 
   /**
    * Modify this type so that it matches the specified type.
@@ -1662,7 +1683,7 @@ public abstract class JSType implements TypeI, Serializable {
       this.isSubtype = isSubtype;
     }
 
-    private boolean isSubtype;
+    private final boolean isSubtype;
     boolean subtypeValue() {
       return this.isSubtype;
     }

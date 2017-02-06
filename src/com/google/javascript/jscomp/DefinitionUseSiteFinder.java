@@ -22,7 +22,6 @@ import com.google.common.collect.Multimap;
 import com.google.javascript.jscomp.DefinitionsRemover.Definition;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.rhino.Node;
-
 import java.util.Collection;
 
 /**
@@ -170,7 +169,7 @@ public class DefinitionUseSiteFinder extends NameBasedDefinitionProvider {
         String name = getSimplifiedName(def.getLValue());
         if (name != null) {
           this.definitionNodeByDefinitionSite.remove(node);
-          this.nameDefinitionMultimap.remove(name, node);
+          this.nameDefinitionMultimap.remove(name, def);
         }
       }
     } else {

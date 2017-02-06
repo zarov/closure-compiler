@@ -21,7 +21,6 @@ import com.google.common.base.Preconditions;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-
 import javax.annotation.Nullable;
 
 /**
@@ -78,7 +77,7 @@ class ConstParamCheck extends AbstractPostOrderCallback implements CompilerPass 
    */
   @Override
   public void visit(NodeTraversal traversal, Node node, Node parent) {
-    if (node.getToken() == Token.CALL) {
+    if (node.isCall()) {
       Node name = node.getFirstChild();
       Node argument = name.getNext();
       if (argument == null) {
@@ -153,10 +152,10 @@ class ConstParamCheck extends AbstractPostOrderCallback implements CompilerPass 
     if (node == null) {
       return false;
     }
-    if (node.getToken() == Token.STRING) {
+    if (node.isString()) {
       return true;
     } else if (node.getToken() == Token.ADD) {
-      Preconditions.checkState(node.getChildCount() == 2);
+      Preconditions.checkState(node.hasTwoChildren());
       Node left = node.getFirstChild();
       Node right = node.getLastChild();
       return isStringLiteralValue(left) && isStringLiteralValue(right);

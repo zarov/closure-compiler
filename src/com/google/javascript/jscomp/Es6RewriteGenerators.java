@@ -125,7 +125,7 @@ public final class Es6RewriteGenerators
       case THIS:
         enclosing = NodeUtil.getEnclosingFunction(n);
         if (enclosing != null && enclosing.isGeneratorFunction()) {
-          n.getParent().replaceChild(n, IR.name(GENERATOR_THIS));
+          n.replaceWith(IR.name(GENERATOR_THIS));
         }
         break;
       case YIELD:
@@ -321,7 +321,7 @@ public final class Es6RewriteGenerators
     } else if (currentStatement.isFunction()) {
       visitFunctionStatement();
       return false;
-    } else if (currentStatement.isBlock()) {
+    } else if (currentStatement.isNormalBlock()) {
       visitBlock();
       return false;
     } else if (controlCanExit(currentStatement)) {
@@ -329,11 +329,10 @@ public final class Es6RewriteGenerators
         case WHILE:
         case DO:
         case FOR:
-          if (NodeUtil.isForIn(currentStatement)) {
-            visitForIn();
-            return false;
-          }
           visitLoop(null);
+          return false;
+        case FOR_IN:
+          visitForIn();
           return false;
         case LABEL:
           visitLabel();
@@ -644,7 +643,7 @@ public final class Es6RewriteGenerators
    * Lifts all children to the body of the original generator to flatten the block.
    */
   private void visitBlock() {
-    if (currentStatement.getChildCount() == 0) {
+    if (!currentStatement.hasChildren()) {
       return;
     }
     Node insertionPoint = currentStatement.removeFirstChild();
@@ -766,7 +765,7 @@ public final class Es6RewriteGenerators
       body = currentStatement.removeFirstChild();
       initializer = IR.empty();
       incr = IR.empty();
-    } else if (currentStatement.isFor()) {
+    } else if (currentStatement.isVanillaFor()) {
       initializer = currentStatement.removeFirstChild();
       if (initializer.isAssign()) {
         initializer = IR.exprResult(initializer);
@@ -785,7 +784,7 @@ public final class Es6RewriteGenerators
 
     Node condition, prestatement;
 
-    if (guard.isBlock()) {
+    if (guard.isNormalBlock()) {
       prestatement = guard.removeFirstChild();
       condition = guard.removeFirstChild();
     } else {
@@ -800,7 +799,7 @@ public final class Es6RewriteGenerators
       continueState = generatorCaseCount++;
       Node continueCase = makeGeneratorMarker(continueState);
       body.addChildToBack(continueCase);
-      body.addChildToBack(incr.isBlock() ? incr : IR.exprResult(incr));
+      body.addChildToBack(incr.isNormalBlock() ? incr : IR.exprResult(incr));
     }
 
     currentLoopContext.add(0, new LoopContext(generatorCaseCount, continueState, label));
@@ -1013,7 +1012,7 @@ public final class Es6RewriteGenerators
 
     private void visitLoop(Node n) {
       Node enclosingFunc = NodeUtil.getEnclosingFunction(n);
-      if (enclosingFunc == null || !enclosingFunc.isGeneratorFunction() || NodeUtil.isForIn(n)) {
+      if (enclosingFunc == null || !enclosingFunc.isGeneratorFunction() || n.isForIn()) {
         return;
       }
       Node enclosingBlock = NodeUtil.getEnclosingBlock(n);
@@ -1098,6 +1097,7 @@ public final class Es6RewriteGenerators
         case DO:
         case WHILE:
         case FOR:
+        case FOR_IN:
           continueCatchers++;
           breakCatchers++;
           break;
@@ -1164,6 +1164,7 @@ public final class Es6RewriteGenerators
         case DO:
         case WHILE:
         case FOR:
+        case FOR_IN:
           continueCatchers--;
           breakCatchers--;
           break;

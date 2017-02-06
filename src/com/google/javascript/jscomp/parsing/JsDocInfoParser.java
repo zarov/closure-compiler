@@ -16,6 +16,8 @@
 
 package com.google.javascript.jscomp.parsing;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Ascii;
 import com.google.common.base.CharMatcher;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Splitter;
@@ -47,6 +49,10 @@ import java.util.Set;
 // TODO(nicksantos): Unify all the JSDocInfo stuff into one package, instead of
 // spreading it across multiple packages.
 public final class JsDocInfoParser {
+  @VisibleForTesting
+  public static final String BAD_TYPE_WIKI_LINK =
+      " See https://github.com/google/closure-compiler/wiki/Bad-Type-Annotation for"
+            + " more information.";
 
   private final JsDocTokenStream stream;
   private final JSDocInfoBuilder jsdocBuilder;
@@ -82,7 +88,8 @@ public final class JsDocInfoParser {
 
   private void addTypeWarning(String messageId, String messageArg, int lineno, int charno) {
     errorReporter.warning(
-        "Bad type annotation. " + SimpleErrorReporter.getMessage1(messageId, messageArg),
+        "Bad type annotation. " + SimpleErrorReporter.getMessage1(messageId, messageArg)
+            + BAD_TYPE_WIKI_LINK,
         getSourceName(),
         lineno,
         charno);
@@ -94,7 +101,8 @@ public final class JsDocInfoParser {
 
   private void addTypeWarning(String messageId, int lineno, int charno) {
     errorReporter.warning(
-        "Bad type annotation. " + SimpleErrorReporter.getMessage0(messageId),
+        "Bad type annotation. " + SimpleErrorReporter.getMessage0(messageId)
+            + BAD_TYPE_WIKI_LINK,
         getSourceName(),
         lineno,
         charno);
@@ -225,10 +233,12 @@ public final class JsDocInfoParser {
   }
 
   private static JsDocInfoParser getParser(String toParse) {
-    Config config = new Config(
-        new HashSet<String>(),
-        new HashSet<String>(),
-        LanguageMode.ECMASCRIPT3);
+    Config config =
+        new Config(
+            new HashSet<String>(),
+            new HashSet<String>(),
+            LanguageMode.ECMASCRIPT3,
+            Config.StrictMode.SLOPPY);
     JsDocInfoParser parser = new JsDocInfoParser(
         new JsDocTokenStream(toParse),
         toParse,
@@ -273,6 +283,31 @@ public final class JsDocInfoParser {
     return parseHelperLoop(token, new ArrayList<ExtendedTypeInfo>());
   }
 
+  /**
+   * Important comments begin with /*! They are treated as license blocks, but no further JSDoc
+   * parsing is performed
+   */
+  void parseImportantComment() {
+    state = State.SEARCHING_ANNOTATION;
+    skipEOLs();
+
+    JsDocToken token = next();
+
+    ExtractionInfo info = extractMultilineComment(token, WhitespaceOption.PRESERVE, false, true);
+
+    // An extra space is added by the @license annotation
+    // so we need to add one here so they will be identical
+    String license = " " + info.string;
+
+    if (fileLevelJsDocBuilder != null) {
+      fileLevelJsDocBuilder.addLicense(license);
+    } else if (jsdocBuilder.shouldParseDocumentation()) {
+      jsdocBuilder.recordBlockDescription(license);
+    } else {
+      jsdocBuilder.recordBlockDescription("");
+    }
+  }
+
   private boolean parseHelperLoop(JsDocToken token,
                                   List<ExtendedTypeInfo> extendedTypes) {
     while (true) {
@@ -300,7 +335,7 @@ public final class JsDocInfoParser {
                 // PRIVATE and PROTECTED are not allowed in @fileoverview JsDoc.
                 addParserWarning(
                     "msg.bad.fileoverview.visibility.annotation",
-                    visibility.toString().toLowerCase());
+                    Ascii.toLowerCase(visibility.toString()));
                 success = false;
                 break;
               default:
@@ -540,7 +575,7 @@ public final class JsDocInfoParser {
           type = null;
           if (token != JsDocToken.EOL && token != JsDocToken.EOC) {
             Node typeNode = parseAndRecordTypeNode(token);
-            if (typeNode != null && typeNode.getToken() == Token.STRING) {
+            if (typeNode != null && typeNode.isString()) {
               String typeName = typeNode.getString();
               if (!typeName.equals("number") && !typeName.equals("string")
                   && !typeName.equals("boolean")) {
@@ -1982,12 +2017,13 @@ public final class JsDocInfoParser {
    * TypeExpressionList := TopLevelTypeExpression
    *     | TopLevelTypeExpression ',' TypeExpressionList
    */
-  private Node parseTypeExpressionList(JsDocToken token) {
+  private Node parseTypeExpressionList(String typeName, JsDocToken token) {
     Node typeExpr = parseTopLevelTypeExpression(token);
     if (typeExpr == null) {
       return null;
     }
     Node typeList = IR.block();
+    int numTypeExprs = 1;
     typeList.addChildToBack(typeExpr);
     while (match(JsDocToken.COMMA)) {
       next();
@@ -1996,7 +2032,12 @@ public final class JsDocInfoParser {
       if (typeExpr == null) {
         return null;
       }
+      numTypeExprs++;
       typeList.addChildToBack(typeExpr);
+    }
+    if (typeName.equals("Object") && numTypeExprs == 1) {
+      // Unlike other generic types, Object<V> means Object<?, V>, not Object<V, ?>.
+      typeList.addChildToFront(newNode(Token.QMARK));
     }
     return typeList;
   }
@@ -2126,7 +2167,7 @@ public final class JsDocInfoParser {
     if (match(JsDocToken.LEFT_ANGLE)) {
       next();
       skipEOLs();
-      Node memberType = parseTypeExpressionList(next());
+      Node memberType = parseTypeExpressionList(typeName, next());
       if (memberType != null) {
         typeNameNode.addChildToFront(memberType);
 
@@ -2367,7 +2408,7 @@ public final class JsDocInfoParser {
       }
       next();
     }
-    if (union.getChildCount() == 1) {
+    if (union.hasOneChild()) {
       Node firstChild = union.getFirstChild();
       union.removeChild(firstChild);
       return firstChild;
