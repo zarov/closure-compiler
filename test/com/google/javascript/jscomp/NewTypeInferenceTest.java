@@ -13301,6 +13301,21 @@ public final class NewTypeInferenceTest extends NewTypeInferenceTestBase {
         "}"));
   }
 
+  public void testJoinOfGenericNominalTypes() {
+    typeCheck(LINE_JOINER.join(
+        "/** @constructor */",
+        "function Foo() {}",
+        "/** @constructor */",
+        "function Bar() {}",
+        "/**",
+        " * @param {(!Array<number>| !Array<!Foo> | !Array<!Bar>)} x",
+        " * @param {!Array<number>} y",
+        " */",
+        "function f(x, y, z) {",
+        "  x = y;",
+        "}"));
+  }
+
   public void testUnificationWithSubtyping() {
     typeCheck(LINE_JOINER.join(
         "/** @constructor */ function Foo() {}",
@@ -18148,8 +18163,23 @@ public final class NewTypeInferenceTest extends NewTypeInferenceTestBase {
         "}",
         "function f(x) {",
         "  var y = x ? new Foo(123) : new Foo('asdf');",
-        // prop is typed ?, no warning
         "  var /** null */ n = y.prop;",
+        "}"),
+        NewTypeInference.MISTYPED_ASSIGN_RHS);
+
+    typeCheck(LINE_JOINER.join(
+        "/**",
+        " * @constructor",
+        " * @template T",
+        " * @param {T} x",
+        " */",
+        "function Foo(x) {",
+        "  /** @type {T} */",
+        "  this.prop = x;",
+        "}",
+        "function f(x) {",
+        "  var y = x ? new Foo(123) : new Foo('asdf');",
+        "  var /** (number|string) */ n = y.prop;",
         "}"));
 
     typeCheck(LINE_JOINER.join(
@@ -19041,5 +19071,43 @@ public final class NewTypeInferenceTest extends NewTypeInferenceTestBase {
         "function f(x) {",
         "  return (x.foo === undefined ? 123 : x.foo);",
         "}"));
+  }
+
+  public void testMixedClassInheritance() {
+    typeCheck(LINE_JOINER.join(
+        "/** @record */",
+        "function IToggle() {}",
+        "/** @return {number} */",
+        "IToggle.prototype.foo = function() {};",
+        "/**",
+        " * @param {function(new:T)} superClass",
+        " * @template T",
+        " */",
+        "function addToggle(superClass) {",
+        "  /**",
+        "   * @constructor",
+        "   * @extends {superClass}",
+        "   * @implements {IToggle}",
+        "   */",
+        "  var Toggle = function() {};",
+        "  Toggle.prototype.foo = function() { return 5; };",
+        "  return Toggle;",
+        "}",
+        "/** @struct @constructor */",
+        "var Bar = function() {};",
+        "/**",
+        " * @constructor",
+        " * @extends {Bar}",
+        " * @implements {IToggle}",
+        " */",
+        "var ToggleBar = addToggle(Bar);",
+        "/**",
+        " * @constructor",
+        " * @extends {ToggleBar}",
+        " */",
+        "var Foo = function() {};",
+        "/** @override @return {string} */",
+        "Foo.prototype.foo = function() { return ''; };"),
+        GlobalTypeInfo.INVALID_PROP_OVERRIDE);
   }
 }
